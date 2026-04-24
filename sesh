@@ -1,0 +1,21 @@
+#!/bin/bash
+DB="${HOME}/.local/share/opencode/opencode.db"
+cmd="${1:-list}"
+limit="${2:-10}"
+
+case "$cmd" in
+  list)
+    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session ORDER BY time_created DESC LIMIT $limit;"
+    ;;
+  search)
+    query="$2"
+    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE title LIKE '%$query%' OR directory LIKE '%$query%' ORDER BY time_created DESC LIMIT 20;"
+    ;;
+  show)
+    sid="$2"
+    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created, datetime(time_updated,'unixepoch') as updated FROM session WHERE id = '$sid';"
+    ;;
+  today)
+    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE time_created > strftime('%s','now') - 86400 ORDER BY time_created DESC LIMIT 20;"
+    ;;
+esac

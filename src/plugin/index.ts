@@ -1,46 +1,35 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
+const SESH_BIN = `${process.env.HOME}/dev/forge/scripts/sesh/sesh`
+
 export const Sesh: Plugin = async ({ client }) => {
   return {
     tool: {
-      sesh: {
-        description: "Search OpenCode sessions across ALL directories",
+      "sessions-global": {
+        description: "List sessions from ALL directories",
         args: {
-          cmd: client.schema.enum(["list", "search", "show", "today", "range"]).optional("list"),
+          cmd: client.schema.enum(["list", "search", "show", "today"]).optional("list"),
           q: client.schema.string().optional(""),
         },
-        async execute(args, context) {
-          const db = `${process.env.HOME}/.local/share/opencode/opencode.db`
-          const limit = args.q || "10"
-
-          if (args.cmd === "list") {
-            return await context.$(`sqlite3 "${db}" "SELECT id, directory, title, datetime(time_created, 'unixepoch') as created FROM session ORDER BY time_created DESC LIMIT ${limit};"`)
+        async execute(args) {
+          if (!args.cmd || args.cmd === "list") {
+            return await Bun.spawn([SESH_BIN, args.q || "10"]).text()
           }
 
           if (args.cmd === "search" && args.q) {
-            return await context.$(`sqlite3 "${db}" "SELECT id, directory, title, datetime(time_created, 'unixepoch') as created FROM session WHERE title LIKE '%${args.q}%' OR directory LIKE '%${args.q}%' ORDER BY time_created DESC LIMIT 20;"`)
+            const result = await Bun.spawn([SESH_BIN, "search", args.q]).text()
+            return result || "No sessions found"
           }
 
           if (args.cmd === "show" && args.q) {
-            return await context.$(`sqlite3 "${db}" "SELECT id, directory, title, datetime(time_created, 'unixepoch') as created, datetime(time_updated, 'unixepoch') as updated FROM session WHERE id = '${args.q}';"`)
+            return await Bun.spawn([SESH_BIN, "show", args.q]).text()
           }
 
           if (args.cmd === "today") {
-            return await context.$(`sqlite3 "${db}" "SELECT id, directory, title, datetime(time_created, 'unixepoch') as created FROM session WHERE time_created > strftime('%s', 'now') - 86400 ORDER BY time_created DESC LIMIT 20;"`)
+            return await Bun.spawn([SESH_BIN, "today"]).text()
           }
 
-          if (args.cmd === "range" && args.q) {
-            return await context.$(`sqlite3 "${db}" "SELECT id, directory, title, datetime(time_created, 'unixepoch') as created FROM session WHERE time_created > strftime('%s', 'now') - (${args.q} * 86400) ORDER BY time_created DESC LIMIT 20;"`)
-          }
-
-          return `Usage: sesh <list|search|show|today|range> [query]
-
-Examples:
-  sesh list 20
-  sesh search keywatch
-  sesh show ses_24505ac96ffemL7ijB336Ccrt0
-  sesh today
-  sesh range 7`
+          return `Usage: sessions-global [list|search|show|today] [query]`
         },
       },
     },
