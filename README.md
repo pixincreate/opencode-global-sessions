@@ -1,86 +1,103 @@
-# sesh - Global Session Search
+# opencode-sesh - Global Session Search for OpenCode
 
-Quick & memorable session search for OpenCode CLI.
+List and search OpenCode sessions across ALL directories.
 
-## Quick Start
+## Why This Exists
+
+OpenCode's built-in `/sessions` command only shows sessions from the **current directory**. This tool lets you see sessions from ALL directories globally.
+
+## How It Works
+
+### Architecture
+
+```
+sesh/
+├── sesh                    # Bash CLI (standalone terminal tool)
+├── src/plugin/index.ts      # OpenCode plugin (spawns bash CLI)
+└── dist/index.js           # Compiled plugin
+```
+
+1. **Bash CLI (`sesh`)**: Direct SQLite queries to `~/.local/share/opencode/opencode.db`
+2. **Plugin (`sessions-global`)**: Spawns bash CLI via `Bun.spawn()` and returns output
+3. **Slash Command (`/sessions-global`)**: Calls the plugin tool
+
+### Usage
 
 ```bash
-# Find your session
-sesh list
-sesh search keywatch
-sesh today
-```
+# Terminal
+~/dev/forge/scripts/sesh/sesh list
+~/dev/forge/scripts/sesh/sesh search keywatch
 
-## Installation
-
-### As CLI (recommended)
-
-```bash
-export PATH="$HOME/dev/forge/scripts/sesh:$PATH"
-sesh list
-```
-
-### As OpenCode Plugin
-
-Add to your opencode config:
-
-```json
-// ~/.config/opencode/opencode.json
-{
-  "plugins": {
-    "sesh": "./sesh"
-  }
-}
-```
-
-Then use in OpenCode:
-```
-@sesh list
-@sesh search keywatch
+# In OpenCode
+@sessions-global list
+@sessions-global search keywatch
 ```
 
 ## Commands
 
 | Command | Description |
-|--------|-------------|
-| `sesh list [n]` | List n recent sessions (default: 10) |
-| `sesh search <query>` | Search sessions by title/directory |
-| `sesh dir <path>` | Find sessions for directory |
-| `sesh today` | Sessions from today |
-| `sesh range <days>` | Sessions from last N days |
-| `sesh show <id>` | Show session details |
+|---------|-------------|
+| `list [n]` | List n recent sessions (default: 10) |
+| `search <query>` | Search by title/directory |
+| `show <id>` | Show session details |
+| `today` | Sessions from today |
 
-## Examples
+## Drawbacks: Why `/sessions-global` != `/sessions`
+
+**`/sessions` (built-in)**
+- Shows TUI popup with clickable sessions
+- Native OpenCode feature
+- Only shows current directory
+
+**`/sessions-global` (this tool)**
+- Returns **text output** only
+- Cannot create TUI popups
+- Shows ALL directories
+
+**Why?**
+- OpenCode plugins **cannot** create TUI/popup interfaces
+- Plugins can only return text or call tools
+- The TUI popup is a built-in OpenCode feature, not extensible via plugins
+
+This is a OpenCode platform limitation, not this tool's limitation.
+
+## Installation
+
+### As Plugin
+
+```json
+// ~/.config/opencode/opencode.jsonc
+{
+  "plugin": ["/path/to/sesh"],
+  "command": {
+    "sessions-global": {
+      "description": "List sessions from ALL directories",
+      "template": "sessions-global list"
+    }
+  }
+}
+```
+
+### As CLI
 
 ```bash
-# List 20 recent sessions
-sesh list 20
+# Add to PATH
+export PATH="$HOME/dev/forge/scripts/sesh:$PATH"
 
-# Search for keywatch sessions
-sesh search keywatch
-
-# Find sessions for a project
-sesh dir ~/projects/myapp
-
-# Today's sessions
-sesh today
-
-# Last 7 days
-sesh range 7
-
-# Show session details
-sesh show ses_24505ac96ffemL7ijB336Ccrt0
+# Or use full path
+~/dev/forge/scripts/sesh/sesh list
 ```
 
 ## Database
 
 Reads from: `~/.local/share/opencode/opencode.db`
 
+## License
+
+MIT License - See LICENSE file.
+
 ## Notes
 
-- Only your prompts are stored (not AI responses)
 - Sessions auto-purge after some time
-- Use `prompt-history.jsonl` for full prompt history:
-  ```bash
-  cat ~/.local/state/opencode/prompt-history.jsonl
-  ```
+- Only prompts are stored (not AI responses)
+- For full prompt history: `cat ~/.local/state/opencode/prompt-history.jsonl`
