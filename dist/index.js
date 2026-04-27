@@ -1,29 +1,31 @@
 // src/plugin/index.ts
+import { execSync } from "child_process";
 var SESH_BIN = `${process.env.HOME}/dev/forge/scripts/sesh/sesh`;
-var Sesh = async ({ client }) => {
+var Sesh = async () => {
   return {
     tool: {
       "sessions-global": {
         description: "List sessions from ALL directories",
         args: {
-          cmd: client.schema.enum(["list", "search", "show", "today"]).optional("list"),
-          q: client.schema.string().optional("")
+          cmd: { type: "string", optional: true },
+          q: { type: "string", optional: true }
         },
-        async execute(args) {
-          if (!args.cmd || args.cmd === "list") {
-            return await Bun.spawn([SESH_BIN, args.q || "10"]).text();
+        execute(args) {
+          const cmd = args.cmd || "list";
+          const limit = args.q || "10";
+          if (cmd === "list") {
+            return execSync(`${SESH_BIN} list ${limit}`, { encoding: "utf-8" });
           }
-          if (args.cmd === "search" && args.q) {
-            const result = await Bun.spawn([SESH_BIN, "search", args.q]).text();
-            return result || "No sessions found";
+          if (cmd === "search" && args.q) {
+            return execSync(`${SESH_BIN} search ${args.q}`, { encoding: "utf-8" }) || "No sessions found";
           }
-          if (args.cmd === "show" && args.q) {
-            return await Bun.spawn([SESH_BIN, "show", args.q]).text();
+          if (cmd === "show" && args.q) {
+            return execSync(`${SESH_BIN} show ${args.q}`, { encoding: "utf-8" });
           }
-          if (args.cmd === "today") {
-            return await Bun.spawn([SESH_BIN, "today"]).text();
+          if (cmd === "today") {
+            return execSync(`${SESH_BIN} today`, { encoding: "utf-8" });
           }
-          return `Usage: sessions-global [list|search|show|today] [query]`;
+          return "Usage: sessions-global [list|search|show|today] [query]";
         }
       }
     }

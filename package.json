@@ -1,32 +1,23 @@
 {
   "name": "opencode-sesh",
   "version": "1.0.0",
-  "description": "Global session search plugin for OpenCode - search sessions across ALL directories",
+  "description": "Global session search for OpenCode",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
     "build": "node build.mjs"
   },
-  "dependencies": {
-    "@opencode-ai/plugin": "^1.1.60"
-  },
   "devDependencies": {
-    "esbuild": "^0.28.0",
-    "typescript": "^5.0.0"
+    "esbuild": "^0.28.0"
   },
   "files": [
-    "dist"
+    "dist",
+    "sesh"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/pixincreate/opencode-sesh.git"
   },
-  "keywords": [
-    "opencode",
-    "opencode-plugin",
-    "session",
-    "search"
-  ],
+  "keywords": ["opencode", "session", "search"],
   "license": "MIT"
 }
