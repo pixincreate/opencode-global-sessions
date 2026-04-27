@@ -1,4 +1,4 @@
-# opencode-sesh - Global Session Search for OpenCode
+# opencode-global-sessions - Global Session Search for OpenCode
 
 List and search OpenCode sessions across **ALL directories**.
 
