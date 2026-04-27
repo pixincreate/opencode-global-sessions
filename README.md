@@ -14,7 +14,7 @@ You work on multiple projects with OpenCode. Sometimes you start a session in pr
 
 | Where | Command |
 |-------|---------|
-| Terminal | `~/dev/forge/scripts/sesh/sesh list` |
+| Terminal | `~/path/to/sesh list` |
 | OpenCode | `/sessions-global` |
 | OpenCode | `@sessions-global search keywatch` |
 
@@ -64,7 +64,7 @@ sesh (bash) ──> SQLite DB ──> Plugin ──> OpenCode
 
 ```bash
 # Add to PATH
-export PATH="$HOME/dev/forge/scripts/sesh:$PATH"
+export PATH="$HOME/path/to:$PATH"
 
 # Use
 sesh list
