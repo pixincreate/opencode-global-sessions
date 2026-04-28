@@ -1,69 +1,47 @@
-# opencode-global-sessions - Global Session Search for OpenCode
+# opencode-global-sessions
 
-List and search OpenCode sessions across **ALL directories**.
+Global session search for OpenCode. Query sessions across all directories, not just the current one.
 
-## Use Case
+## Description
 
-You work on multiple projects with OpenCode. Sometimes you start a session in project A, then switch to project B, then back to A. Later, you want to find that session you were working on 3 days ago - but you can't remember which directory it was in.
+OpenCode's built-in session search only shows sessions from the current working directory. This tool queries the global SQLite database directly, allowing you to find sessions from any project without switching directories.
 
-**Problem:** OpenCode's `/sessions` only shows sessions from the **current directory**.
+## Quickstart
 
-**Solution:** This tool shows sessions from **ALL directories** globally.
+```bash
+# List recent sessions
+sesh list
 
-## Quick Use
+# Search across all sessions
+sesh search "my project"
 
-| Where    | Command                            |
-| -------- | ---------------------------------- |
-| Terminal | `~/path/to/sesh list`              |
-| OpenCode | `/sessions-global`                 |
-| OpenCode | `@sessions-global search keywatch` |
+# Show specific session
+sesh show <session-id>
 
-## How It Works
-
+# Today's sessions
+sesh today
 ```
-sesh (bash) ──> SQLite DB ──> Plugin ──> OpenCode
-```
-
-- **Bash CLI (`sesh`)**: Queries `~/.local/share/opencode/opencode.db` directly
-- **Plugin**: Spawns bash CLI via Node's `execSync`
-- **Slash**: `/sessions-global` invokes the plugin
-
-## Commands
-
-| Command          | Description                          |
-| ---------------- | ------------------------------------ |
-| `list [n]`       | List n recent sessions (default: 10) |
-| `search <query>` | Search by title/directory            |
-| `show <id>`      | Show session details                 |
-| `today`          | Sessions from today                  |
-
-## Why No TUI?
-
-`/sessions` shows a clickable popup. `/sessions-global` returns text only.
-
-**Reason:** OpenCode plugins cannot create TUI/popups. This is a platform limitation, not this tool's limitation.
 
 ## Installation
 
 ### Build from Source
 
 ```bash
-# Clone and build
 git clone https://github.com/pixincreate/opencode-global-sessions.git
 cd opencode-global-sessions
-npm install
-npm run build
+npm install && npm run build
 
-# Install CLI to ~/.local/bin (optional, but recommended)
+# Optional: install CLI to PATH
 cp sesh ~/.local/bin/
 ```
 
-### As OpenCode Plugin
+### OpenCode Plugin
+
+Add to `~/.config/opencode/opencode.jsonc`:
 
 ```json
-// ~/.config/opencode/opencode.jsonc
 {
-  "plugin": ["/path/to/sesh"],
+  "plugin": ["/path/to/opencode-global-sessions"],
   "command": {
     "sessions-global": {
       "description": "List sessions from ALL directories",
@@ -73,42 +51,27 @@ cp sesh ~/.local/bin/
 }
 ```
 
-### As Terminal CLI
+### Configuration
 
-```bash
-# Option 1: Install to ~/.local/bin (recommended)
-cp sesh ~/.local/bin/
-# Already in PATH if ~/.local/bin is in your PATH
-
-# Option 2: Add repository to PATH
-export PATH="$HOME/path/to/sesh/repo:$PATH"
-
-# Use
-sesh list
-sesh search keywatch
-sesh show <session-id>
-```
-
-## Database
-
-By default, reads from: `~/.local/share/opencode/opencode.db`
-
-### Custom Database Location
-
-Set the `OPENCODE_DB` environment variable to use a different database path:
+Override defaults via environment variables:
 
 ```bash
 export OPENCODE_DB="/custom/path/to/opencode.db"
-```
-
-### Custom Sesh Binary Location
-
-If `sesh` is not in `~/.local/bin/`, set the `SESH_BIN` environment variable:
-
-```bash
 export SESH_BIN="/custom/path/to/sesh"
 ```
 
+## How It Works
+
+```
+OpenCode Plugin → Bash CLI → SQLite Database
+```
+
+The plugin spawns the bash CLI via `execSync`, which queries `~/.local/share/opencode/opencode.db` directly. Results are returned as plain text since OpenCode plugins cannot render interactive UI elements.
+
+## Why No TUI?
+
+OpenCode plugins operate in a restricted environment. They cannot create popups, clickable lists, or interactive elements. The `/sessions` command shows a TUI popup because it is a built-in platform feature. Third-party plugins are limited to text output only.
+
 ## License
 
-MIT - See LICENSE file
+[MIT LICENSE](LICENSE)
