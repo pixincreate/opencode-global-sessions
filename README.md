@@ -6,6 +6,22 @@ Global session search for OpenCode. Query sessions across all directories, not j
 
 OpenCode's built-in session search only shows sessions from the current working directory. This tool queries the global SQLite database directly, allowing you to find sessions from any project without switching directories.
 
+## Use Case
+
+You work on multiple projects with OpenCode. Sometimes you start a session in project A, then switch to project B, then back to A. Later, you want to find that session you were working on 3 days ago - but you can't remember which directory it was in.
+
+**Problem:** OpenCode's `/sessions` only shows sessions from the **current directory**.
+
+**Solution:** This tool shows sessions from **ALL directories** globally.
+
+## Quick Use
+
+| Where | Command |
+|--------|----------------------------------|
+| Terminal | `~/path/to/sesh list` |
+| OpenCode | `/sessions-global` |
+| OpenCode | `@sessions-global search keywatch` |
+
 ## Quickstart
 
 ```bash
@@ -21,6 +37,15 @@ sesh show <session-id>
 # Today's sessions
 sesh today
 ```
+
+## Usage
+
+| Command | Description |
+|---------|-------------|
+| `list [n]` | List n recent sessions (default: 10) |
+| `search <query>` | Search sessions by title or directory |
+| `show <id>` | Show details for a specific session |
+| `today` | List sessions from the last 24 hours |
 
 ## Installation
 
