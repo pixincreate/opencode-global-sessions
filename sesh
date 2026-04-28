@@ -1,20 +1,48 @@
 #!/bin/bash
-DB="${HOME}/.local/share/opencode/opencode.db"
+# Configuration: Allow override via environment variables
+DB="${OPENCODE_DB:-${HOME}/.local/share/opencode/opencode.db}"
+SESH_BIN="${SESH_BIN:-${HOME}/.local/bin/sesh}"
+
 cmd="${1:-list}"
 limit="${2:-10}"
 
+# Validate database exists
+if [[ ! -f "$DB" ]]; then
+    echo "Error: Database not found at $DB" >&2
+    echo "Set OPENCODE_DB environment variable to specify a different path" >&2
+    exit 1
+fi
+
+# Helper function to escape SQL strings (prevent SQL injection)
+escape_sql() {
+    printf '%s' "$1" | sed "s/'/''/g"
+}
+
 case "$cmd" in
-  list)
-    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session ORDER BY time_created DESC LIMIT $limit;"
-    ;;
-  search)
-    query="$2"
-    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE title LIKE '%$query%' OR directory LIKE '%$query%' ORDER BY time_created DESC LIMIT 20;"
-    ;;
-  show)
-    sid="$2"
-    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created, datetime(time_updated,'unixepoch') as updated FROM session WHERE id = '$sid';"
-    ;;
+list)
+  # Validate limit is a positive number
+  if [[ ! "$limit" =~ ^[0-9]+$ ]]; then
+    echo "Error: limit must be a positive number" >&2
+    exit 1
+  fi
+  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session ORDER BY time_created DESC LIMIT $limit;"
+  ;;
+search)
+  if [[ -z "$2" ]]; then
+    echo "Error: search requires a query argument" >&2
+    exit 1
+  fi
+  query="$(escape_sql "$2")"
+  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE title LIKE '%${query}%' OR directory LIKE '%${query}%' ORDER BY time_created DESC LIMIT 20;"
+  ;;
+show)
+  if [[ -z "$2" ]]; then
+    echo "Error: show requires a session ID argument" >&2
+    exit 1
+  fi
+  sid="$(escape_sql "$2")"
+  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created, datetime(time_updated,'unixepoch') as updated FROM session WHERE id = '${sid}';"
+  ;;
   today)
     sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE time_created > strftime('%s','now') - 86400 ORDER BY time_created DESC LIMIT 20;"
     ;;

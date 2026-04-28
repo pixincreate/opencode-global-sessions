@@ -12,10 +12,10 @@ You work on multiple projects with OpenCode. Sometimes you start a session in pr
 
 ## Quick Use
 
-| Where | Command |
-|-------|---------|
-| Terminal | `~/path/to/sesh list` |
-| OpenCode | `/sessions-global` |
+| Where    | Command                            |
+| -------- | ---------------------------------- |
+| Terminal | `~/path/to/sesh list`              |
+| OpenCode | `/sessions-global`                 |
 | OpenCode | `@sessions-global search keywatch` |
 
 ## How It Works
@@ -30,12 +30,12 @@ sesh (bash) ──> SQLite DB ──> Plugin ──> OpenCode
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `list [n]` | List n recent sessions (default: 10) |
-| `search <query>` | Search by title/directory |
-| `show <id>` | Show session details |
-| `today` | Sessions from today |
+| Command          | Description                          |
+| ---------------- | ------------------------------------ |
+| `list [n]`       | List n recent sessions (default: 10) |
+| `search <query>` | Search by title/directory            |
+| `show <id>`      | Show session details                 |
+| `today`          | Sessions from today                  |
 
 ## Why No TUI?
 

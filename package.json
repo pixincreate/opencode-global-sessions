@@ -18,6 +18,10 @@
     "type": "git",
     "url": "https://github.com/pixincreate/opencode-global-sessions.git"
   },
-  "keywords": ["opencode", "session", "search"],
+  "keywords": [
+    "opencode",
+    "session",
+    "search"
+  ],
   "license": "MIT"
 }
