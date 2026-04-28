@@ -5,22 +5,32 @@ const SESH_BIN = process.env.SESH_BIN || `${process.env.HOME}/.local/bin/sesh`;
 type CommandHandler = (query?: string) => string;
 
 const executeCommand = (command: string, arg?: string): string => {
-  const fullCommand = arg ? `${SESH_BIN} ${command} "${arg.replace(/"/g, '\\"')}"` : `${SESH_BIN} ${command}`;
+  const fullCommand = arg
+    ? `${SESH_BIN} ${command} "${arg.replace(/"/g, '\\"')}"`
+    : `${SESH_BIN} ${command}`;
   const result = execSync(fullCommand, { encoding: "utf-8" });
   return result.trim();
 };
 
-const handleError = (error: Error & { code?: string; status?: number; stderr?: Buffer }): string => {
+const handleError = (
+  error: Error & { code?: string; status?: number; stderr?: Buffer },
+): string => {
   if (error.code === "ENOENT") {
     return `Error: sesh binary not found at ${SESH_BIN}. Install it to ~/.local/bin or set SESH_BIN environment variable.`;
   }
   if (error.status === 1) {
-    return error.stderr?.toString().trim() || `Error executing command: ${error.message}`;
+    return (
+      error.stderr?.toString().trim() ||
+      `Error executing command: ${error.message}`
+    );
   }
   return `Error: ${error.message}`;
 };
 
-const commands: Record<string, { handler: CommandHandler; requiresArg: boolean }> = {
+const commands: Record<
+  string,
+  { handler: CommandHandler; requiresArg: boolean }
+> = {
   list: {
     handler: (query) => {
       const limit = query || "10";
@@ -67,7 +77,13 @@ export const Sesh = () => {
             const result = commandConfig.handler(args.q);
             return result || `No results found for ${cmd}`;
           } catch (error) {
-            return handleError(error as Error & { code?: string; status?: number; stderr?: Buffer });
+            return handleError(
+              error as Error & {
+                code?: string;
+                status?: number;
+                stderr?: Buffer;
+              },
+            );
           }
         },
       },
