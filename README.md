@@ -45,6 +45,19 @@ sesh (bash) ──> SQLite DB ──> Plugin ──> OpenCode
 
 ## Installation
 
+### Build from Source
+
+```bash
+# Clone and build
+git clone https://github.com/pixincreate/opencode-global-sessions.git
+cd opencode-global-sessions
+npm install
+npm run build
+
+# Install CLI to ~/.local/bin (optional, but recommended)
+cp sesh ~/.local/bin/
+```
+
 ### As OpenCode Plugin
 
 ```json
@@ -63,17 +76,38 @@ sesh (bash) ──> SQLite DB ──> Plugin ──> OpenCode
 ### As Terminal CLI
 
 ```bash
-# Add to PATH
-export PATH="$HOME/path/to:$PATH"
+# Option 1: Install to ~/.local/bin (recommended)
+cp sesh ~/.local/bin/
+# Already in PATH if ~/.local/bin is in your PATH
+
+# Option 2: Add repository to PATH
+export PATH="$HOME/path/to/sesh/repo:$PATH"
 
 # Use
 sesh list
 sesh search keywatch
+sesh show <session-id>
 ```
 
 ## Database
 
-Reads from: `~/.local/share/opencode/opencode.db`
+By default, reads from: `~/.local/share/opencode/opencode.db`
+
+### Custom Database Location
+
+Set the `OPENCODE_DB` environment variable to use a different database path:
+
+```bash
+export OPENCODE_DB="/custom/path/to/opencode.db"
+```
+
+### Custom Sesh Binary Location
+
+If `sesh` is not in `~/.local/bin/`, set the `SESH_BIN` environment variable:
+
+```bash
+export SESH_BIN="/custom/path/to/sesh"
+```
 
 ## License
 

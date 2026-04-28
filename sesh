@@ -1,10 +1,19 @@
 #!/bin/bash
-# Configuration: Allow override via environment variables
+set -euo pipefail
+
 DB="${OPENCODE_DB:-${HOME}/.local/share/opencode/opencode.db}"
-SESH_BIN="${SESH_BIN:-${HOME}/.local/bin/sesh}"
 
 cmd="${1:-list}"
-limit="${2:-10}"
+
+usage() {
+    echo "Usage: sesh {list|search|show|today} [args...]"
+    echo ""
+    echo "Commands:"
+    echo "  list [n]       List n recent sessions (default: 10)"
+    echo "  search <query> Search by title/directory"
+    echo "  show <id>      Show session details"
+    echo "  today          Show sessions from today"
+}
 
 # Validate database exists
 if [[ ! -f "$DB" ]]; then
@@ -20,8 +29,12 @@ escape_sql() {
 
 case "$cmd" in
 list)
-  # Validate limit is a positive number
-  if [[ ! "$limit" =~ ^[0-9]+$ ]]; then
+  if [[ -z "${2:-}" ]]; then
+    limit="10"
+  else
+    limit="$2"
+  fi
+  if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
     echo "Error: limit must be a positive number" >&2
     exit 1
   fi
@@ -43,7 +56,12 @@ show)
   sid="$(escape_sql "$2")"
   sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created, datetime(time_updated,'unixepoch') as updated FROM session WHERE id = '${sid}';"
   ;;
-  today)
-    sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE time_created > strftime('%s','now') - 86400 ORDER BY time_created DESC LIMIT 20;"
-    ;;
+today)
+  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE time_created > strftime('%s','now') - 86400 ORDER BY time_created DESC LIMIT 20;"
+  ;;
+*)
+  echo "Error: Unknown command '$cmd'" >&2
+  usage >&2
+  exit 1
+  ;;
 esac
