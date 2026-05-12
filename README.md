@@ -16,51 +16,40 @@ You work on multiple projects with OpenCode. Sometimes you start a session in pr
 
 ## Quick Use
 
-| Where | Command |
-|--------|----------------------------------|
-| Terminal | `~/path/to/sesh list` |
-| OpenCode | `/sessions-global` |
+| Where    | Command                            |
+| -------- | ---------------------------------- |
+| Terminal | `sesh list`                        |
+| OpenCode | `/sessions-global`                 |
 | OpenCode | `@sessions-global search keywatch` |
-
-## Quickstart
-
-```bash
-# List recent sessions
-sesh list
-
-# Search across all sessions
-sesh search "my project"
-
-# Show specific session
-sesh show <session-id>
-
-# Today's sessions
-sesh today
-```
-
-## Usage
-
-| Command | Description |
-|---------|-------------|
-| `list [n]` | List n recent sessions (default: 10) |
-| `search <query>` | Search sessions by title or directory |
-| `show <id>` | Show details for a specific session |
-| `today` | List sessions from the last 24 hours |
 
 ## Installation
 
-### Build from Source
+### Terminal CLI (Recommended)
+
+Download the `sesh` script and install it to your PATH:
+
+```bash
+# Download sesh
+curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/sesh > sesh
+
+# Install to PATH (assumes ~/.local/bin is in your PATH)
+chmod +x sesh
+cp sesh ~/.local/bin/
+
+# Verify it works
+sesh list
+```
+
+### OpenCode Plugin (Optional)
+
+If you want to use `/sessions-global` from within OpenCode, you need to build the plugin:
 
 ```bash
 git clone https://github.com/pixincreate/opencode-global-sessions.git
 cd opencode-global-sessions
 npm install && npm run build
-
-# Optional: install CLI to PATH
 cp sesh ~/.local/bin/
 ```
-
-### OpenCode Plugin
 
 Add to `~/.config/opencode/opencode.jsonc`:
 
@@ -76,7 +65,18 @@ Add to `~/.config/opencode/opencode.jsonc`:
 }
 ```
 
-### Configuration
+**Note:** OpenCode plugins cannot render popups or interactive UI. The `/sessions-global` command returns plain text output, just like running `sesh` from terminal.
+
+## Usage
+
+| Command          | Description                           |
+| ---------------- | ------------------------------------- |
+| `list [n]`       | List n recent sessions (default: 10)  |
+| `search <query>` | Search sessions by title or directory |
+| `show <id>`      | Show details for a specific session   |
+| `today`          | List sessions from the last 24 hours  |
+
+## Configuration
 
 Override defaults via environment variables:
 
@@ -88,14 +88,10 @@ export SESH_BIN="/custom/path/to/sesh"
 ## How It Works
 
 ```
-OpenCode Plugin → Bash CLI → SQLite Database
+sesh (bash) ──> SQLite DB ──> Results
 ```
 
-The plugin spawns the bash CLI via `execSync`, which queries `~/.local/share/opencode/opencode.db` directly. Results are returned as plain text since OpenCode plugins cannot render interactive UI elements.
-
-## Why No TUI?
-
-OpenCode plugins operate in a restricted environment. They cannot create popups, clickable lists, or interactive elements. The `/sessions` command shows a TUI popup because it is a built-in platform feature. Third-party plugins are limited to text output only.
+The `sesh` script queries `~/.local/share/opencode/opencode.db` directly using SQLite. It is a standalone bash script with no dependencies beyond `sqlite3` (which is installed on most systems).
 
 ## License
 
