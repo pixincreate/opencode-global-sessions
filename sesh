@@ -20,20 +20,20 @@ fi
 
 usage() {
   cat <<EOF
-${C_BOLD}sesh${C_RESET} — Global session search for OpenCode
+sesh — Global session search for OpenCode
 
-${C_BOLD}Usage:${C_RESET}
-  sesh ${C_GREEN}list${C_RESET} [n]                     List n recent sessions (default: 10)
-  sesh ${C_GREEN}search${C_RESET} <query> [options]     Search sessions by title/directory/message
-  sesh ${C_GREEN}show${C_RESET} <id>                    Show full session details
-  sesh ${C_GREEN}today${C_RESET}                        Sessions from the last 24 hours
-  sesh ${C_GREEN}stats${C_RESET}                        Aggregate session statistics
-  sesh ${C_GREEN}files${C_RESET} <id>                   List files touched in a session
-  sesh ${C_GREEN}config${C_RESET}                       Show configuration and env
-  sesh ${C_GREEN}interactive${C_RESET}                  Browse sessions interactively
-  sesh ${C_GREEN}help${C_RESET}                         Show this help
+Usage:
+  sesh list [n]                     List n recent sessions (default: 10)
+  sesh search <query> [options]     Search sessions by title/directory/message
+  sesh show <id>                    Show full session details
+  sesh today                        Sessions from the last 24 hours
+  sesh stats                        Aggregate session statistics
+  sesh files <id>                   List files touched in a session
+  sesh config                       Show configuration and env
+  sesh interactive                  Browse sessions interactively
+  sesh help                         Show this help
 
-${C_BOLD}Search options:${C_RESET}
+Search options:
   --content                   Also search message content (slower)
   --since <date>              Filter by start date (ISO 8601 or '7d', '30d')
   --until <date>              Filter by end date
@@ -42,12 +42,12 @@ ${C_BOLD}Search options:${C_RESET}
   --json                      Output in JSON format (pipe to jq, fzf)
   --no-color                  Disable colored output
 
-${C_BOLD}Environment:${C_RESET}
+Environment:
   OPENCODE_DB                 Path to opencode.db (default: ~/.local/share/opencode/opencode.db)
   SESH_BIN                    Path to sesh binary (for plugin, not CLI)
   NO_COLOR                    Disable colored output
 
-${C_BOLD}Examples:${C_RESET}
+Examples:
   sesh search justfile
   sesh search justfile --content
   sesh search hyperswitch --since 7d --limit 5
