@@ -67,14 +67,54 @@ Add to `~/.config/opencode/opencode.jsonc`:
 
 **Note:** OpenCode plugins cannot render popups or interactive UI. The `/sessions-global` command returns plain text output, just like running `sesh` from terminal.
 
+Set `SESH_BIN` in your shell config if sesh is not at `~/.local/bin/sesh`:
+
+```bash
+export SESH_BIN="/path/to/sesh"
+```
+
+### Development symlink
+
+For local development, symlink instead of copy so changes reflect immediately:
+
+```bash
+ln -sf /path/to/opencode-global-sessions/sesh ~/.local/bin/sesh
+```
+
 ## Usage
 
 | Command          | Description                           |
 | ---------------- | ------------------------------------- |
 | `list [n]`       | List n recent sessions (default: 10)  |
 | `search <query>` | Search sessions by title or directory |
-| `show <id>`      | Show details for a specific session   |
-| `today`          | List sessions from the last 24 hours  |
+| `show <id>`      | Show full session details             |
+| `files <id>`     | List files touched in a session       |
+| `today`          | Sessions from the last 24 hours       |
+| `stats`          | Aggregate session statistics          |
+| `config`         | Show configuration and environment    |
+| `interactive`    | Browse sessions interactively         |
+
+### Search options
+
+| Option           | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `--content`      | Also search message content (slower)          |
+| `--since <date>` | Filter by start date (ISO 8601 or `7d`)       |
+| `--until <date>` | Filter by end date                            |
+| `--limit <n>`    | Max results (default: 20)                     |
+| `--fuzzy`        | Broader substring matching                    |
+| `--json`         | Machine-readable JSON output (pipe to jq/fzf) |
+
+### Examples
+
+```bash
+sesh search justfile
+sesh search justfile --content --since 7d
+sesh search justfile --json | jq '.[].title'
+sesh search shell --fuzzy
+sesh files ses_xxxxxxxxxxxxxxxxxxxx
+sesh config
+```
 
 ## Configuration
 

@@ -2,7 +2,7 @@ import { execSync } from "child_process";
 
 const SESH_BIN = process.env.SESH_BIN || `${process.env.HOME}/.local/bin/sesh`;
 
-type CommandHandler = (query?: string) => string;
+type CommandHandler = (query?: string, opts?: string) => string;
 
 const executeCommand = (command: string, arg?: string): string => {
   const fullCommand = arg
@@ -32,14 +32,12 @@ const commands: Record<
   { handler: CommandHandler; requiresArg: boolean }
 > = {
   list: {
-    handler: (query) => {
-      const limit = query || "10";
-      return executeCommand(`list ${limit}`);
-    },
+    handler: (query) => executeCommand(`list ${query || "10"}`),
     requiresArg: false,
   },
   search: {
-    handler: (query) => executeCommand("search", query),
+    handler: (query, opts) =>
+      executeCommand("search", `${query || ""}${opts ? " " + opts : ""}`),
     requiresArg: true,
   },
   show: {
@@ -48,6 +46,22 @@ const commands: Record<
   },
   today: {
     handler: () => executeCommand("today"),
+    requiresArg: false,
+  },
+  stats: {
+    handler: () => executeCommand("stats"),
+    requiresArg: false,
+  },
+  files: {
+    handler: (query) => executeCommand("files", query),
+    requiresArg: true,
+  },
+  config: {
+    handler: () => executeCommand("config"),
+    requiresArg: false,
+  },
+  help: {
+    handler: () => executeCommand("help"),
     requiresArg: false,
   },
 };
@@ -60,13 +74,14 @@ export const Sesh = () => {
         args: {
           cmd: { type: "string", optional: true },
           q: { type: "string", optional: true },
+          opts: { type: "string", optional: true },
         },
-        execute(args: { cmd?: string; q?: string }): string {
+        execute(args: { cmd?: string; q?: string; opts?: string }): string {
           const cmd = args.cmd || "list";
           const commandConfig = commands[cmd];
 
           if (!commandConfig) {
-            return "Usage: sessions-global [list|search|show|today] [query]";
+            return `Usage: sessions-global [list|search|show|today|stats|files|config] [query]\nOptions (search): --content --since <date> --until <date> --limit <n> --fuzzy --json`;
           }
 
           if (commandConfig.requiresArg && !args.q) {
@@ -74,7 +89,7 @@ export const Sesh = () => {
           }
 
           try {
-            const result = commandConfig.handler(args.q);
+            const result = commandConfig.handler(args.q, args.opts);
             return result || `No results found for ${cmd}`;
           } catch (error) {
             return handleError(

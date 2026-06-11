@@ -2,66 +2,563 @@
 set -euo pipefail
 
 DB="${OPENCODE_DB:-${HOME}/.local/share/opencode/opencode.db}"
+SESH_LIST_CMD="${SESH_LIST_CMD:-list}"  # for interactive mode
 
-cmd="${1:-list}"
-
-usage() {
-    echo "Usage: sesh {list|search|show|today} [args...]"
-    echo ""
-    echo "Commands:"
-    echo "  list [n]       List n recent sessions (default: 10)"
-    echo "  search <query> Search by title/directory"
-    echo "  show <id>      Show session details"
-    echo "  today          Show sessions from today"
-}
-
-# Validate database exists
-if [[ ! -f "$DB" ]]; then
-    echo "Error: Database not found at $DB" >&2
-    echo "Set OPENCODE_DB environment variable to specify a different path" >&2
-    exit 1
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_RESET="\033[0m"
+  C_BOLD="\033[1m"
+  C_DIM="\033[2m"
+  C_RED="\033[31m"
+  C_GREEN="\033[32m"
+  C_YELLOW="\033[33m"
+  C_BLUE="\033[34m"
+  C_CYAN="\033[36m"
+else
+  C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""
+  C_YELLOW=""; C_BLUE=""; C_CYAN=""
 fi
 
-# Helper function to escape SQL strings (prevent SQL injection)
-escape_sql() {
-    printf '%s' "$1" | sed "s/'/''/g"
+usage() {
+  cat <<EOF
+${C_BOLD}sesh${C_RESET} — Global session search for OpenCode
+
+${C_BOLD}Usage:${C_RESET}
+  sesh ${C_GREEN}list${C_RESET} [n]                     List n recent sessions (default: 10)
+  sesh ${C_GREEN}search${C_RESET} <query> [options]     Search sessions by title/directory/message
+  sesh ${C_GREEN}show${C_RESET} <id>                    Show full session details
+  sesh ${C_GREEN}today${C_RESET}                        Sessions from the last 24 hours
+  sesh ${C_GREEN}stats${C_RESET}                        Aggregate session statistics
+  sesh ${C_GREEN}files${C_RESET} <id>                   List files touched in a session
+  sesh ${C_GREEN}config${C_RESET}                       Show configuration and env
+  sesh ${C_GREEN}interactive${C_RESET}                  Browse sessions interactively
+  sesh ${C_GREEN}help${C_RESET}                         Show this help
+
+${C_BOLD}Search options:${C_RESET}
+  --content                   Also search message content (slower)
+  --since <date>              Filter by start date (ISO 8601 or '7d', '30d')
+  --until <date>              Filter by end date
+  --limit <n>                 Max results (default: 20)
+  --fuzzy                     Broader substring matching
+  --json                      Output in JSON format (pipe to jq, fzf)
+  --no-color                  Disable colored output
+
+${C_BOLD}Environment:${C_RESET}
+  OPENCODE_DB                 Path to opencode.db (default: ~/.local/share/opencode/opencode.db)
+  SESH_BIN                    Path to sesh binary (for plugin, not CLI)
+  NO_COLOR                    Disable colored output
+
+${C_BOLD}Examples:${C_RESET}
+  sesh search justfile
+  sesh search justfile --content
+  sesh search hyperswitch --since 7d --limit 5
+  sesh show ses_xxxxxxxxxxxxxxxxxxxx
+  sesh search justfile --json | jq '.[].title'
+  sesh files ses_xxxxxxxxxxxxxxxxxxxx
+EOF
 }
 
-case "$cmd" in
-list)
-  if [[ -z "${2:-}" ]]; then
-    limit="10"
-  else
-    limit="$2"
-  fi
-  if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
-    echo "Error: limit must be a positive number" >&2
-    exit 1
-  fi
-  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session ORDER BY time_created DESC LIMIT $limit;"
-  ;;
-search)
-  if [[ -z "$2" ]]; then
-    echo "Error: search requires a query argument" >&2
-    exit 1
-  fi
-  query="$(escape_sql "$2")"
-  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE title LIKE '%${query}%' OR directory LIKE '%${query}%' ORDER BY time_created DESC LIMIT 20;"
-  ;;
-show)
-  if [[ -z "$2" ]]; then
-    echo "Error: show requires a session ID argument" >&2
-    exit 1
-  fi
-  sid="$(escape_sql "$2")"
-  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created, datetime(time_updated,'unixepoch') as updated FROM session WHERE id = '${sid}';"
-  ;;
-today)
-  sqlite3 -header -column "$DB" "SELECT id, directory, title, datetime(time_created,'unixepoch') as created FROM session WHERE time_created > strftime('%s','now') - 86400 ORDER BY time_created DESC LIMIT 20;"
-  ;;
-*)
-  echo "Error: Unknown command '$cmd'" >&2
-  usage >&2
+if [[ ! -f "$DB" ]]; then
+  echo "${C_RED}Error:${C_RESET} Database not found at ${C_DIM}$DB${C_RESET}" >&2
+  echo "Set ${C_BOLD}OPENCODE_DB${C_RESET} env var to specify a different path" >&2
   exit 1
-  ;;
+fi
+
+escape_sql() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+time_ago() {
+  local epoch="$1"
+  local now
+  now=$(date +%s)
+  local diff=$(( now - epoch ))
+  if (( diff < 60 )); then
+    echo "${diff}s"
+  elif (( diff < 3600 )); then
+    echo "$(( diff / 60 ))m"
+  elif (( diff < 86400 )); then
+    echo "$(( diff / 3600 ))h"
+  else
+    echo "$(( diff / 86400 ))d"
+  fi
+}
+
+parse_date() {
+  local val="$1"
+  if [[ -z "$val" ]]; then
+    echo ""
+    return
+  fi
+  if [[ "$val" =~ ^([0-9]+)([dDhHmM])$ ]]; then
+    local num="${BASH_REMATCH[1]}"
+    local unit="${BASH_REMATCH[2]}"
+    case "$unit" in
+      d|D) date -v -"${num}"d +%s 2>/dev/null || date -d "${num} days ago" +%s 2>/dev/null;;
+      h|H) date -v -"${num}"H +%s 2>/dev/null || date -d "${num} hours ago" +%s 2>/dev/null;;
+      m|M) date -v -"${num}"M +%s 2>/dev/null || date -d "${num} minutes ago" +%s 2>/dev/null;;
+    esac
+    return
+  fi
+  if echo "$val" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}'; then
+    if [[ "$val" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+      date -j -f "%Y-%m-%dT%H:%M:%S" "$val" +%s 2>/dev/null || \
+      date -d "$val" +%s 2>/dev/null || echo ""
+    else
+      date -j -f "%Y-%m-%d" "$val" +%s 2>/dev/null || \
+      date -d "$val" +%s 2>/dev/null || echo ""
+    fi
+    return
+  fi
+  echo ""
+}
+
+format_session_row() {
+  local id="$1"
+  local dir="$2"
+  local title="$3"
+
+  local short_id="${id:0:12}…"
+
+  local short_dir
+  short_dir=$(basename "$dir" 2>/dev/null || echo "$dir")
+  if [[ ${#short_dir} -gt 28 ]]; then
+    short_dir="${short_dir:0:25}…"
+  fi
+
+  if [[ ${#title} -gt 55 ]]; then
+    title="${title:0:52}…"
+  fi
+
+  printf "${C_CYAN}%-14s${C_RESET} ${C_GREEN}%-30s${C_RESET} ${C_BOLD}%-55s${C_RESET}\n" "$short_id" "$short_dir" "$title"
+}
+
+cmd_list() {
+  local limit="${1:-10}"
+  if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
+    echo "${C_RED}Error:${C_RESET} limit must be a positive number" >&2
+    exit 1
+  fi
+
+  sqlite3 -header -column "$DB" "
+    SELECT id, directory, title, datetime(time_created/1000,'unixepoch') as created
+    FROM session
+    ORDER BY time_created DESC
+    LIMIT $limit;
+  "
+}
+
+cmd_search() {
+  local query=""
+  local search_content=0
+  local since=""
+  local until=""
+  local limit=20
+  local fuzzy=0
+  local json_output=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --content) search_content=1; shift;;
+      --since|--after) since="$2"; shift 2;;
+      --until|--before) until="$2"; shift 2;;
+      --limit) limit="$2"; shift 2;;
+      --fuzzy) fuzzy=1; shift;;
+      --json) json_output=1; shift;;
+      --no-color) NO_COLOR=1; shift;;
+      -h|--help) usage; exit 0;;
+      -*)
+        echo "${C_RED}Error:${C_RESET} Unknown option: $1" >&2
+        usage >&2; exit 1;;
+      *)
+        if [[ -z "$query" ]]; then
+          query="$1"
+        fi
+        shift;;
+    esac
+  done
+
+  if [[ -z "$query" ]]; then
+    echo "${C_RED}Error:${C_RESET} search requires a query argument" >&2
+    echo "Usage: sesh search <query> [--content] [--since 7d] [--until 2026-06-01] [--limit 20]" >&2
+    exit 1
+  fi
+
+  if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
+    echo "${C_RED}Error:${C_RESET} limit must be a positive number" >&2
+    exit 1
+  fi
+
+  local escaped
+  escaped="$(escape_sql "$query")"
+
+  local where_clause=""
+  local wildcard="%"
+  local query_pattern="${wildcard}${escaped}${wildcard}"
+
+  if (( fuzzy )); then
+    # Fuzzy: match each word independently
+    local words
+    IFS=' ' read -ra words <<< "$escaped"
+    local fuzzy_conditions=()
+    for word in "${words[@]}"; do
+      fuzzy_conditions+=("(s.title LIKE '%${word}%' OR s.directory LIKE '%${word}%')")
+    done
+    local title_dir_condition
+    title_dir_condition=$(IFS=' OR '; echo "${fuzzy_conditions[*]}")
+
+    where_clause="$title_dir_condition"
+
+    if (( search_content )); then
+      local msg_conditions=()
+      for word in "${words[@]}"; do
+        msg_conditions+=("m.data LIKE '%${word}%'")
+      done
+      local msg_condition
+      msg_condition=$(IFS=' OR '; echo "${msg_conditions[*]}")
+      where_clause="($where_clause OR EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id AND ($msg_condition)))"
+    fi
+  else
+    where_clause="(s.title LIKE '${query_pattern}' OR s.directory LIKE '${query_pattern}')"
+
+    if (( search_content )); then
+      where_clause="($where_clause OR EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id AND m.data LIKE '${query_pattern}'))"
+    fi
+  fi
+
+  local date_condition=""
+  if [[ -n "$since" ]]; then
+    local since_ts
+    since_ts=$(parse_date "$since")
+    if [[ -n "$since_ts" ]]; then
+      date_condition=" AND s.time_created >= $((since_ts * 1000))"
+    fi
+  fi
+  if [[ -n "$until" ]]; then
+    local until_ts
+    until_ts=$(parse_date "$until")
+    if [[ -n "$until_ts" ]]; then
+      date_condition="${date_condition} AND s.time_created <= $((until_ts * 1000))"
+    fi
+  fi
+
+  local sql
+  sql="SELECT s.id, s.directory, s.title, datetime(s.time_created/1000,'unixepoch') as created
+FROM session s
+WHERE ${where_clause}${date_condition}
+ORDER BY s.time_created DESC
+LIMIT $limit;"
+
+  if (( json_output )); then
+    sqlite3 -json "$DB" "$sql"
+  else
+    sqlite3 -header -column "$DB" "$sql"
+  fi
+}
+
+cmd_show() {
+  local sid="$1"
+  if [[ -z "$sid" ]]; then
+    echo "${C_RED}Error:${C_RESET} show requires a session ID" >&2
+    exit 1
+  fi
+  sid="$(escape_sql "$sid")"
+
+  echo "${C_BOLD}╔══ Session Details ═══════════════════════════════════════╗${C_RESET}"
+
+  sqlite3 -separator $'\n' "$DB" "
+    SELECT '${C_CYAN}ID:${C_RESET}        ' || s.id,
+           '${C_CYAN}Title:${C_RESET}     ' || s.title,
+           '${C_CYAN}Directory:${C_RESET} ' || s.directory,
+           '${C_CYAN}Created:${C_RESET}   ' || datetime(s.time_created/1000,'unixepoch'),
+           '${C_CYAN}Updated:${C_RESET}   ' || datetime(s.time_updated/1000,'unixepoch'),
+           '${C_CYAN}Agent:${C_RESET}     ' || COALESCE(s.agent, 'N/A'),
+           '${C_CYAN}Model:${C_RESET}     ' || COALESCE(s.model, 'N/A'),
+           '${C_CYAN}Version:${C_RESET}   ' || s.version,
+           '${C_CYAN}Project:${C_RESET}   ' || COALESCE(p.name, s.project_id),
+           '${C_CYAN}Cost:${C_RESET}      ' || printf('%.4f', s.cost),
+           '${C_CYAN}Tokens (I/O/R):${C_RESET} ' || s.tokens_input || ' / ' || s.tokens_output || ' / ' || COALESCE(s.tokens_reasoning, 0),
+           '${C_CYAN}Cache (R/W):${C_RESET} ' || COALESCE(s.tokens_cache_read, 0) || ' / ' || COALESCE(s.tokens_cache_write, 0)
+    FROM session s
+    LEFT JOIN project p ON p.id = s.project_id
+    WHERE s.id = '${sid}';
+  " 2>/dev/null
+
+  local msg_count
+  msg_count=$(sqlite3 "$DB" "SELECT count(*) FROM message WHERE session_id = '${sid}';" 2>/dev/null)
+  local user_msgs
+  user_msgs=$(sqlite3 "$DB" "SELECT count(*) FROM message WHERE session_id = '${sid}' AND json_extract(data,'$.role')='user';" 2>/dev/null)
+  local assistant_msgs
+  assistant_msgs=$(sqlite3 "$DB" "SELECT count(*) FROM message WHERE session_id = '${sid}' AND json_extract(data,'$.role')='assistant';" 2>/dev/null)
+
+  echo "${C_CYAN}Messages:${C_RESET}    $msg_count total ($user_msgs user, $assistant_msgs assistant)"
+
+  echo ""
+  echo "${C_BOLD}╔══ Messages ═══════════════════════════════════════════════╗${C_RESET}"
+  sqlite3 -separator $'\n' "$DB" "
+    SELECT CASE
+      WHEN json_extract(data,'$.role') = 'user' THEN
+        '${C_GREEN}[USER]${C_RESET}    ' || COALESCE(json_extract(data,'$.summary.title'), '(no title)')
+      WHEN json_extract(data,'$.role') = 'assistant' THEN
+        '${C_BLUE}[ASSISTANT]${C_RESET} ' || CASE
+          WHEN json_extract(data,'$.finish') = 'stop' THEN '${C_GREEN}completed${C_RESET}'
+          WHEN json_extract(data,'$.finish') = 'tool-calls' THEN '${C_YELLOW}tool calls${C_RESET}'
+          WHEN json_extract(data,'$.error') IS NOT NULL THEN '${C_RED}error${C_RESET}'
+          ELSE 'unknown'
+        END || ' | model: ' || COALESCE(json_extract(data,'$.modelID'), '?') || ' | tokens: ' || COALESCE(json_extract(data,'$.tokens.total'), '?')
+      ELSE '[OTHER]    ' || json_extract(data,'$.role')
+    END,
+    '         ' || datetime(m.time_created/1000,'unixepoch') || ' (' || CAST(m.time_created AS TEXT) || ')'
+    FROM message m
+    WHERE m.session_id = '${sid}'
+    ORDER BY m.time_created ASC;
+  " 2>/dev/null
+
+  echo ""
+  echo "${C_BOLD}╔══ Files Changed ═══════════════════════════════════════════╗${C_RESET}"
+  local file_count
+  file_count=$(sqlite3 "$DB" "
+    SELECT count(DISTINCT json_extract(data, '$.summary.diffs[0].file'))
+    FROM message
+    WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL;
+  " 2>/dev/null)
+
+  if [[ "$file_count" -gt 0 ]]; then
+    sqlite3 -separator $'\n' "$DB" "
+      SELECT '  ${C_CYAN}•${C_RESET} ' || json_extract(data, '$.summary.diffs[0].file')
+      FROM message
+      WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL
+      GROUP BY json_extract(data, '$.summary.diffs[0].file')
+      ORDER BY json_extract(data, '$.summary.diffs[0].file');
+    " 2>/dev/null
+  else
+    echo "  ${C_DIM}(none)${C_RESET}"
+  fi
+
+  echo ""
+  echo "${C_BOLD}╚══════════════════════════════════════════════════════════════╝${C_RESET}"
+}
+
+cmd_today() {
+  sqlite3 -header -column "$DB" "
+    SELECT id, directory, title, datetime(time_created/1000,'unixepoch') as created
+    FROM session
+    WHERE time_created > (strftime('%s','now') - 86400) * 1000
+    ORDER BY time_created DESC
+    LIMIT 20;
+  "
+}
+
+cmd_stats() {
+  echo "${C_BOLD}╔══ Session Statistics ═════════════════════════════════════╗${C_RESET}"
+
+  sqlite3 -separator $'\n' "$DB" "
+    SELECT '${C_CYAN}Total sessions:${C_RESET}      ' || count(*) FROM session
+    UNION ALL
+    SELECT '${C_CYAN}Total messages:${C_RESET}      ' || count(*) FROM message
+    UNION ALL
+    SELECT '${C_CYAN}Total projects:${C_RESET}      ' || count(DISTINCT project_id) FROM session
+    UNION ALL
+    SELECT '${C_CYAN}Total directories:${C_RESET}   ' || count(DISTINCT directory) FROM session;
+  "
+
+  echo ""
+  echo "${C_BOLD}╔══ Date Range ═════════════════════════════════════════════╗${C_RESET}"
+  sqlite3 -separator $'\n' "$DB" "
+    SELECT '${C_CYAN}Earliest:${C_RESET}   ' || datetime(MIN(time_created)/1000,'unixepoch') FROM session
+    UNION ALL
+    SELECT '${C_CYAN}Latest:${C_RESET}     ' || datetime(MAX(time_created)/1000,'unixepoch') FROM session;
+  "
+
+  echo ""
+  echo "${C_BOLD}╔══ Top Directories ════════════════════════════════════════╗${C_RESET}"
+  sqlite3 -separator $'\n' "$DB" "
+    SELECT '${C_CYAN}  ' || printf('%3d', cnt) || '${C_RESET} ${C_DIM}' || dir || '${C_RESET}'
+    FROM (
+      SELECT directory as dir, count(*) as cnt
+      FROM session
+      GROUP BY directory
+      ORDER BY cnt DESC
+      LIMIT 10
+    );
+  "
+
+  echo ""
+  echo "${C_BOLD}╔══ Token Usage (all time) ═════════════════════════════════╗${C_RESET}"
+  sqlite3 -separator $'\n' "$DB" "
+    SELECT '${C_CYAN}Total cost:${C_RESET}       ' || printf('%.4f', COALESCE(SUM(cost), 0))
+    FROM session
+    UNION ALL
+    SELECT '${C_CYAN}Total input tokens:${C_RESET} ' || COALESCE(SUM(tokens_input), 0)
+    FROM session
+    UNION ALL
+    SELECT '${C_CYAN}Total output tokens:${C_RESET}' || COALESCE(SUM(tokens_output), 0)
+    FROM session
+    UNION ALL
+    SELECT '${C_CYAN}Total reasoning tokens:${C_RESET}' || COALESCE(SUM(tokens_reasoning), 0)
+    FROM session;
+  "
+
+  echo ""
+  echo "${C_BOLD}╚══════════════════════════════════════════════════════════════╝${C_RESET}"
+}
+
+cmd_files() {
+  local sid="$1"
+  if [[ -z "$sid" ]]; then
+    echo "${C_RED}Error:${C_RESET} files requires a session ID" >&2
+    exit 1
+  fi
+  sid="$(escape_sql "$sid")"
+
+  local file_count
+  file_count=$(sqlite3 "$DB" "
+    SELECT count(DISTINCT json_extract(data, '$.summary.diffs[0].file'))
+    FROM message
+    WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL;
+  " 2>/dev/null)
+
+  if [[ "$file_count" -gt 0 ]]; then
+    echo "${C_BOLD}Files touched in ${C_CYAN}${sid}${C_RESET}${C_BOLD}:${C_RESET}"
+    echo ""
+    sqlite3 -separator $'\n' "$DB" "
+      SELECT DISTINCT json_extract(data, '$.summary.diffs[0].file')
+      FROM message
+      WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL
+      ORDER BY json_extract(data, '$.summary.diffs[0].file');
+    " 2>/dev/null | while IFS= read -r f; do
+      if [[ -n "$f" ]]; then
+        echo "  ${C_CYAN}•${C_RESET} $f"
+      fi
+    done
+  else
+    echo "${C_DIM}No file diffs found in session ${sid}${C_RESET}"
+  fi
+}
+
+cmd_config() {
+  local sesh_path
+  sesh_path="$(realpath "$0" 2>/dev/null || echo "$0")"
+
+  echo "${C_BOLD}╔══ sesh Configuration ═════════════════════════════════════╗${C_RESET}"
+  echo "${C_CYAN}Binary:${C_RESET}     ${sesh_path}"
+  echo "${C_CYAN}Database:${C_RESET}   ${DB}"
+  echo ""
+  echo "${C_BOLD}Environment:${C_RESET}"
+  if [[ -n "${OPENCODE_DB:-}" ]]; then
+    echo "  ${C_CYAN}OPENCODE_DB${C_RESET}    ${OPENCODE_DB}  ${C_DIM}(explicit)${C_RESET}"
+  else
+    echo "  ${C_CYAN}OPENCODE_DB${C_RESET}    ${C_DIM}(not set — using default)${C_RESET}"
+  fi
+  if [[ -n "${SESH_BIN:-}" ]]; then
+    echo "  ${C_CYAN}SESH_BIN${C_RESET}      ${SESH_BIN}  ${C_DIM}(explicit)${C_RESET}"
+  else
+    echo "  ${C_CYAN}SESH_BIN${C_RESET}      ${C_DIM}(not set — plugin uses \$HOME/.local/bin/sesh)${C_RESET}"
+  fi
+  if [[ -n "${NO_COLOR:-}" ]]; then
+    echo "  ${C_CYAN}NO_COLOR${C_RESET}       set"
+  else
+    echo "  ${C_CYAN}NO_COLOR${C_RESET}       ${C_DIM}(not set)${C_RESET}"
+  fi
+  echo ""
+  echo "${C_BOLD}Tips:${C_RESET}"
+  echo "  ${C_DIM}• Set OPENCODE_DB to use a different SQLite database${C_RESET}"
+  echo "  ${C_DIM}• Set SESH_BIN for the plugin to find sesh in nonstandard locations${C_RESET}"
+  echo "  ${C_DIM}• Set NO_COLOR to disable colored output${C_RESET}"
+  echo ""
+  echo "${C_BOLD}╚══════════════════════════════════════════════════════════════╝${C_RESET}"
+}
+
+cmd_interactive() {
+  if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
+    echo "${C_YELLOW}Interactive mode requires a terminal. Falling back to list.${C_RESET}" >&2
+    cmd_list 10
+    exit 0
+  fi
+
+  local limit="${1:-30}"
+  if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
+    limit=30
+  fi
+
+  echo "${C_BOLD}sesh interactive${C_RESET} — Select a session to inspect"
+  echo "${C_DIM}Enter number, or 'q' to quit, 'r' to refresh${C_RESET}"
+  echo ""
+
+  while true; do
+    local sessions
+    sessions=$(sqlite3 "$DB" "
+      SELECT id, directory, title, time_created
+      FROM session
+      ORDER BY time_created DESC
+      LIMIT $limit;
+    ")
+
+    local IFS=$'\n'
+    local ids=()
+    local i=1
+
+    echo "${C_BOLD}#  ${C_CYAN}ID              ${C_GREEN}Directory                      ${C_RESET}${C_BOLD}Title                                                   ${C_DIM}When${C_RESET}"
+    echo "${C_DIM}── ────────────── ────────────────────────────── ─────────────────────────────────────────────────────── ─────${C_RESET}"
+
+    while IFS='|' read -r id dir title epoch; do
+      ids+=("$id")
+      local ago
+      ago=$(time_ago "$((epoch / 1000))")
+
+      local short_id="${id:0:12}…"
+      local short_dir
+      short_dir=$(basename "$dir" 2>/dev/null || echo "$dir")
+      if [[ ${#short_dir} -gt 28 ]]; then
+        short_dir="${short_dir:0:25}…"
+      fi
+      if [[ ${#title} -gt 52 ]]; then
+        title="${title:0:49}…"
+      fi
+
+      printf "${C_BOLD}%-3s${C_RESET} ${C_CYAN}%-14s${C_RESET} ${C_GREEN}%-30s${C_RESET} %-54s ${C_DIM}%s${C_RESET}\n" "$i" "$short_id" "$short_dir" "$title" "$ago"
+      ((i++))
+    done <<< "$sessions"
+
+    echo ""
+    read -r -p "Select [1-$((i-1))] (q/r): " choice
+
+    case "$choice" in
+      q|Q) echo "Bye!"; exit 0;;
+      r|R) clear; continue;;
+      *)
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -lt "$i" ]]; then
+          local idx=$((choice - 1))
+          local selected_id="${ids[$idx]}"
+          clear
+          cmd_show "$selected_id"
+          echo ""
+          read -r -p "Press Enter to continue..."
+          clear
+        else
+          echo "${C_RED}Invalid choice${C_RESET}"
+          sleep 1
+        fi
+        ;;
+    esac
+  done
+}
+
+cmd="${1:-list}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  list)       cmd_list "$@";;
+  search)     cmd_search "$@";;
+  show)       cmd_show "${1:-}";;
+  files)      cmd_files "${1:-}";;
+  config)     cmd_config;;
+  today)      cmd_today;;
+  stats)      cmd_stats;;
+  interactive|browse) cmd_interactive "${1:-}";;
+  help|--help|-h) usage; exit 0;;
+  *)
+    echo "${C_RED}Error:${C_RESET} Unknown command '$cmd'" >&2
+    usage >&2
+    exit 1
+    ;;
 esac
