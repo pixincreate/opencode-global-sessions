@@ -133,6 +133,15 @@ sesh (bash) ──> SQLite DB ──> Results
 
 The `sesh` script queries `~/.local/share/opencode/opencode.db` directly using SQLite. It is a standalone bash script with no dependencies beyond `sqlite3` (which is installed on most systems).
 
+## Limitations
+
+The OpenCode database has a read-only schema — sesh cannot change what's stored.
+
+- **Prompt text is not persisted.** User messages store only metadata (role, file diffs). The actual text you type is not saved, so `--content` search matches against the raw JSON blob — file paths, model names, token counts — not the prompts themselves.
+- **Assistant responses are metadata-only.** Tool call output, reasoning, and full responses are not stored. `show` displays what's available (model, tokens, finish reason).
+- **No session title search before the rewrite.** Older sessions (before the v2 schema) stored titles in `summary.title` and are still searchable. Newer sessions derive the title from the session table.
+- **Plugin returns plain text.** OpenCode plugin tools cannot render interactive UI, popups, or rich formatting. Commands like `interactive` and `fzf`-based flows work only in the terminal.
+
 ## License
 
 [MIT LICENSE](LICENSE)
