@@ -8,7 +8,7 @@
     "build": "node build.mjs"
   },
   "devDependencies": {
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.1"
   },
   "files": [
     "dist",
