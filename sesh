@@ -7,12 +7,15 @@ SESH_LIST_CMD="${SESH_LIST_CMD:-list}"  # for interactive mode
 
 usage() {
   cat <<EOF
-sesh — Global session search for OpenCode
+sesh - Global session search for OpenCode
 
 Usage:
   sesh list [n]                     List n recent sessions (default: 10)
   sesh search <query> [options]     Search sessions by title/directory/message
   sesh show <id>                    Show full session details
+  sesh log <id> [options]           Show user + assistant text log
+  sesh prompts <id> [options]       Show user prompts only
+  sesh resume <id>                  Print command to resume a session
   sesh today                        Sessions from the last 24 hours
   sesh stats                        Aggregate session statistics
   sesh files <id>                   List files touched in a session
@@ -27,6 +30,9 @@ Search options:
   --limit <n>                 Max results (default: 20)
   --fuzzy                     Broader substring matching
   --json                      Output in JSON format (pipe to jq, fzf)
+Log/prompts options:
+  --limit <n>                 Max messages (default: 50)
+  --full                      Do not truncate message text
 Environment:
   OPENCODE_DB                 Path to opencode.db (default: ~/.local/share/opencode/opencode.db)
   SESH_BIN                    Path to sesh binary (for plugin, not CLI)
@@ -35,6 +41,9 @@ Examples:
   sesh search justfile --content
   sesh search hyperswitch --since 7d --limit 5
   sesh show ses_xxxxxxxxxxxxxxxxxxxx
+  sesh log ses_xxxxxxxxxxxxxxxxxxxx
+  sesh prompts ses_xxxxxxxxxxxxxxxxxxxx --full
+  sesh resume ses_xxxxxxxxxxxxxxxxxxxx
   sesh search justfile --json | jq '.[].title'
   sesh files ses_xxxxxxxxxxxxxxxxxxxx
 EOF
@@ -48,6 +57,16 @@ fi
 
 escape_sql() {
   printf '%s' "$1" | sed "s/'/''/g"
+}
+
+ensure_session_exists() {
+  local sid="$1"
+  local exists
+  exists=$(sqlite3 "$DB" "SELECT count(*) FROM session WHERE id = '${sid}';" 2>/dev/null)
+  if [[ "$exists" -eq 0 ]]; then
+    echo "Error: session not found: ${sid}" >&2
+    exit 1
+  fi
 }
 
 time_ago() {
@@ -100,16 +119,16 @@ format_session_row() {
   local dir="$2"
   local title="$3"
 
-  local short_id="${id:0:12}…"
+  local short_id="${id:0:12}..."
 
   local short_dir
   short_dir=$(basename "$dir" 2>/dev/null || echo "$dir")
   if [[ ${#short_dir} -gt 28 ]]; then
-    short_dir="${short_dir:0:25}…"
+    short_dir="${short_dir:0:25}..."
   fi
 
   if [[ ${#title} -gt 55 ]]; then
-    title="${title:0:52}…"
+    title="${title:0:52}..."
   fi
 
   printf "%-14s %-30s %-55s\n" "$short_id" "$short_dir" "$title"
@@ -244,8 +263,9 @@ cmd_show() {
     exit 1
   fi
   sid="$(escape_sql "$sid")"
+  ensure_session_exists "$sid"
 
-  echo "╔══ Session Details ═══════════════════════════════════════╗"
+  echo "Session details"
 
   sqlite3 -separator $'\n' "$DB" "
     SELECT 'ID:        ' || s.id,
@@ -275,28 +295,36 @@ cmd_show() {
   echo "Messages:    $msg_count total ($user_msgs user, $assistant_msgs assistant)"
 
   echo ""
-  echo "╔══ Messages ═══════════════════════════════════════════════╗"
+  echo "Messages"
   sqlite3 -separator $'\n' "$DB" "
+    WITH text_parts AS (
+      SELECT message_id,
+             replace(group_concat(json_extract(data, '$.text'), ' '), char(10), ' ') AS text
+      FROM part
+      WHERE session_id = '${sid}' AND json_extract(data, '$.type') = 'text'
+      GROUP BY message_id
+    )
     SELECT CASE
-      WHEN json_extract(data,'$.role') = 'user' THEN
-        '[USER]    ' || COALESCE(json_extract(data,'$.summary.title'), '(no title)')
-      WHEN json_extract(data,'$.role') = 'assistant' THEN
-        '[ASSISTANT] ' || CASE
-          WHEN json_extract(data,'$.finish') = 'stop' THEN 'completed'
-          WHEN json_extract(data,'$.finish') = 'tool-calls' THEN 'tool calls'
-          WHEN json_extract(data,'$.error') IS NOT NULL THEN 'error'
+      WHEN json_extract(m.data,'$.role') = 'user' THEN
+        '[USER]      ' || COALESCE(NULLIF(substr(tp.text, 1, 180), ''), COALESCE(json_extract(m.data,'$.summary.title'), '(no text)'))
+      WHEN json_extract(m.data,'$.role') = 'assistant' THEN
+        '[ASSISTANT] ' || COALESCE(NULLIF(substr(tp.text, 1, 180), ''), CASE
+          WHEN json_extract(m.data,'$.finish') = 'stop' THEN 'completed'
+          WHEN json_extract(m.data,'$.finish') = 'tool-calls' THEN 'tool calls'
+          WHEN json_extract(m.data,'$.error') IS NOT NULL THEN 'error'
           ELSE 'unknown'
-        END || ' | model: ' || COALESCE(json_extract(data,'$.modelID'), '?') || ' | tokens: ' || COALESCE(json_extract(data,'$.tokens.total'), '?')
-      ELSE '[OTHER]    ' || json_extract(data,'$.role')
+        END) || ' | model: ' || COALESCE(json_extract(m.data,'$.modelID'), '?') || ' | tokens: ' || COALESCE(json_extract(m.data,'$.tokens.total'), '?')
+      ELSE '[OTHER]    ' || json_extract(m.data,'$.role')
     END,
-    '         ' || datetime(m.time_created/1000,'unixepoch') || ' (' || CAST(m.time_created AS TEXT) || ')'
+    '            ' || datetime(m.time_created/1000,'unixepoch') || ' (' || CAST(m.time_created AS TEXT) || ')'
     FROM message m
+    LEFT JOIN text_parts tp ON tp.message_id = m.id
     WHERE m.session_id = '${sid}'
     ORDER BY m.time_created ASC;
   " 2>/dev/null
 
   echo ""
-  echo "╔══ Files Changed ═══════════════════════════════════════════╗"
+  echo "Files changed"
   local file_count
   file_count=$(sqlite3 "$DB" "
     SELECT count(DISTINCT json_extract(data, '$.summary.diffs[0].file'))
@@ -306,18 +334,112 @@ cmd_show() {
 
   if [[ "$file_count" -gt 0 ]]; then
     sqlite3 -separator $'\n' "$DB" "
-      SELECT '  • ' || json_extract(data, '$.summary.diffs[0].file')
+      SELECT '- ' || json_extract(data, '$.summary.diffs[0].file')
       FROM message
       WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL
       GROUP BY json_extract(data, '$.summary.diffs[0].file')
       ORDER BY json_extract(data, '$.summary.diffs[0].file');
     " 2>/dev/null
   else
-    echo "  (none)"
+    echo "(none)"
+  fi
+}
+
+cmd_messages() {
+  local mode="$1"
+  local sid="${2:-}"
+  shift 2 || true
+
+  if [[ -z "$sid" ]]; then
+    echo "Error: ${mode} requires a session ID" >&2
+    exit 1
   fi
 
+  local limit=50
+  local full=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --limit)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --limit requires a value" >&2
+          exit 1
+        fi
+        limit="$2"
+        shift 2
+        ;;
+      --full) full=1; shift;;
+      -h|--help)
+        echo "Usage: sesh ${mode} <session_id> [--limit n] [--full]"
+        exit 0
+        ;;
+      *)
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
+    echo "Error: limit must be a positive number" >&2
+    exit 1
+  fi
+
+  sid="$(escape_sql "$sid")"
+  ensure_session_exists "$sid"
+
+  local role_filter=""
+  local heading="Session log"
+  if [[ "$mode" == "prompts" ]]; then
+    role_filter="AND json_extract(m.data, '$.role') = 'user'"
+    heading="User prompts"
+  fi
+
+  echo "${heading} for ${sid}"
   echo ""
-  echo "╚══════════════════════════════════════════════════════════════╝"
+
+  local text_expr
+  if (( full )); then
+    text_expr="replace(COALESCE(tp.text, ''), char(10), '\\n')"
+  else
+    text_expr="substr(replace(COALESCE(tp.text, ''), char(10), ' '), 1, 500)"
+  fi
+
+  sqlite3 -separator $'\t' "$DB" "
+    WITH text_parts AS (
+      SELECT message_id,
+             group_concat(json_extract(data, '$.text'), char(10) || char(10)) AS text
+      FROM part
+      WHERE session_id = '${sid}' AND json_extract(data, '$.type') = 'text'
+      GROUP BY message_id
+    )
+    SELECT upper(COALESCE(json_extract(m.data, '$.role'), 'unknown')),
+           datetime(m.time_created/1000,'unixepoch'),
+           ${text_expr}
+    FROM message m
+    LEFT JOIN text_parts tp ON tp.message_id = m.id
+    WHERE m.session_id = '${sid}' ${role_filter}
+      AND COALESCE(tp.text, '') <> ''
+    ORDER BY m.time_created ASC
+    LIMIT $limit;
+  " 2>/dev/null | while IFS=$'\t' read -r role created text; do
+    if [[ -n "$text" ]]; then
+      echo "[$role] $created"
+      echo "$text"
+      echo ""
+    fi
+  done
+}
+
+cmd_resume() {
+  local sid="$1"
+  if [[ -z "$sid" ]]; then
+    echo "Error: resume requires a session ID" >&2
+    exit 1
+  fi
+  sid="$(escape_sql "$sid")"
+  ensure_session_exists "$sid"
+
+  echo "opencode -s ${sid}"
 }
 
 cmd_today() {
@@ -331,7 +453,7 @@ cmd_today() {
 }
 
 cmd_stats() {
-  echo "╔══ Session Statistics ═════════════════════════════════════╗"
+  echo "Session statistics"
 
   sqlite3 -separator $'\n' "$DB" "
     SELECT 'Total sessions:      ' || count(*) FROM session
@@ -344,7 +466,7 @@ cmd_stats() {
   "
 
   echo ""
-  echo "╔══ Date Range ═════════════════════════════════════════════╗"
+  echo "Date range"
   sqlite3 -separator $'\n' "$DB" "
     SELECT 'Earliest:   ' || datetime(MIN(time_created)/1000,'unixepoch') FROM session
     UNION ALL
@@ -352,7 +474,7 @@ cmd_stats() {
   "
 
   echo ""
-  echo "╔══ Top Directories ════════════════════════════════════════╗"
+  echo "Top directories"
   sqlite3 -separator $'\n' "$DB" "
     SELECT '  ' || printf('%3d', cnt) || ' ' || dir || ''
     FROM (
@@ -365,7 +487,7 @@ cmd_stats() {
   "
 
   echo ""
-  echo "╔══ Token Usage (all time) ═════════════════════════════════╗"
+  echo "Token usage (all time)"
   sqlite3 -separator $'\n' "$DB" "
     SELECT 'Total cost:       ' || printf('%.4f', COALESCE(SUM(cost), 0))
     FROM session
@@ -379,9 +501,6 @@ cmd_stats() {
     SELECT 'Total reasoning tokens:' || COALESCE(SUM(tokens_reasoning), 0)
     FROM session;
   "
-
-  echo ""
-  echo "╚══════════════════════════════════════════════════════════════╝"
 }
 
 cmd_files() {
@@ -391,6 +510,7 @@ cmd_files() {
     exit 1
   fi
   sid="$(escape_sql "$sid")"
+  ensure_session_exists "$sid"
 
   local file_count
   file_count=$(sqlite3 "$DB" "
@@ -409,7 +529,7 @@ cmd_files() {
       ORDER BY json_extract(data, '$.summary.diffs[0].file');
     " 2>/dev/null | while IFS= read -r f; do
       if [[ -n "$f" ]]; then
-        echo "  • $f"
+        echo "- $f"
       fi
     done
   else
@@ -421,7 +541,7 @@ cmd_config() {
   local sesh_path
   sesh_path="$(realpath "$0" 2>/dev/null || echo "$0")"
 
-  echo "╔══ sesh Configuration ═════════════════════════════════════╗"
+  echo "sesh configuration"
   echo "Binary:     ${sesh_path}"
   echo "Database:   ${DB}"
   echo ""
@@ -429,19 +549,17 @@ cmd_config() {
   if [[ -n "${OPENCODE_DB:-}" ]]; then
     echo "  OPENCODE_DB    ${OPENCODE_DB}  (explicit)"
   else
-    echo "  OPENCODE_DB    (not set — using default)"
+    echo "  OPENCODE_DB    (not set - using default)"
   fi
   if [[ -n "${SESH_BIN:-}" ]]; then
     echo "  SESH_BIN      ${SESH_BIN}  (explicit)"
   else
-    echo "  SESH_BIN      (not set — plugin uses \$HOME/.local/bin/sesh)"
+    echo "  SESH_BIN      (not set - plugin uses \$HOME/.local/bin/sesh)"
   fi
   echo ""
   echo "Tips:"
-  echo "  • Set OPENCODE_DB to use a different SQLite database"
-  echo "  • Set SESH_BIN for the plugin to find sesh in nonstandard locations"
-  echo ""
-  echo "╚══════════════════════════════════════════════════════════════╝"
+  echo "- Set OPENCODE_DB to use a different SQLite database"
+  echo "- Set SESH_BIN for the plugin to find sesh in nonstandard locations"
 }
 
 cmd_interactive() {
@@ -456,7 +574,7 @@ cmd_interactive() {
     limit=30
   fi
 
-  echo "sesh interactive — Select a session to inspect"
+  echo "sesh interactive - Select a session to inspect"
   echo "Enter number, or 'q' to quit, 'r' to refresh"
   echo ""
 
@@ -474,21 +592,21 @@ cmd_interactive() {
     local i=1
 
     echo "#  ID              Directory                      Title                                                   When"
-    echo "── ────────────── ────────────────────────────── ─────────────────────────────────────────────────────── ─────"
+    echo "-- -------------- ------------------------------ ------------------------------------------------------ -----"
 
     while IFS='|' read -r id dir title epoch; do
       ids+=("$id")
       local ago
       ago=$(time_ago "$((epoch / 1000))")
 
-      local short_id="${id:0:12}…"
+      local short_id="${id:0:12}..."
       local short_dir
       short_dir=$(basename "$dir" 2>/dev/null || echo "$dir")
       if [[ ${#short_dir} -gt 28 ]]; then
-        short_dir="${short_dir:0:25}…"
+        short_dir="${short_dir:0:25}..."
       fi
       if [[ ${#title} -gt 52 ]]; then
-        title="${title:0:49}…"
+        title="${title:0:49}..."
       fi
 
       printf "%-3s %-14s %-30s %-54s %s\n" "$i" "$short_id" "$short_dir" "$title" "$ago"
@@ -526,6 +644,9 @@ case "$cmd" in
   list)       cmd_list "$@";;
   search)     cmd_search "$@";;
   show)       cmd_show "${1:-}";;
+  log)        cmd_messages log "${1:-}" "${@:2}";;
+  prompts)    cmd_messages prompts "${1:-}" "${@:2}";;
+  resume)     cmd_resume "${1:-}";;
   files)      cmd_files "${1:-}";;
   config)     cmd_config;;
   today)      cmd_today;;

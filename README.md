@@ -19,6 +19,8 @@ You work on multiple projects with OpenCode. Sometimes you start a session in pr
 | Where    | Command                            |
 | -------- | ---------------------------------- |
 | Terminal | `sesh list`                        |
+| Terminal | `sesh log <session_id>`            |
+| Terminal | `sesh resume <session_id>`         |
 | OpenCode | `/sessions-global`                 |
 | OpenCode | `@sessions-global search keywatch` |
 
@@ -81,6 +83,22 @@ For local development, symlink instead of copy so changes reflect immediately:
 ln -sf /path/to/opencode-global-sessions/sesh ~/.local/bin/sesh
 ```
 
+### Development checks
+
+Before committing changes, run:
+
+```bash
+npm run check
+```
+
+This runs:
+
+1. `npm run shellcheck` — ShellCheck for `sesh` and `test/e2e.sh`
+2. `npm run build` — rebuilds the TypeScript plugin
+3. `npm test` — end-to-end CLI + plugin test against a temporary SQLite database
+
+The test database is generated under a temp directory and does not read your real OpenCode database. GitHub Actions runs the same checks on Node.js 26.4.0.
+
 ## Usage
 
 | Command          | Description                           |
@@ -88,6 +106,9 @@ ln -sf /path/to/opencode-global-sessions/sesh ~/.local/bin/sesh
 | `list [n]`       | List n recent sessions (default: 10)  |
 | `search <query>` | Search sessions by title or directory |
 | `show <id>`      | Show full session details             |
+| `log <id>`       | Show user + assistant text log        |
+| `prompts <id>`   | Show user prompts only                |
+| `resume <id>`    | Print `opencode -s <id>`              |
 | `files <id>`     | List files touched in a session       |
 | `today`          | Sessions from the last 24 hours       |
 | `stats`          | Aggregate session statistics          |
@@ -105,6 +126,13 @@ ln -sf /path/to/opencode-global-sessions/sesh ~/.local/bin/sesh
 | `--fuzzy`        | Broader substring matching                    |
 | `--json`         | Machine-readable JSON output (pipe to jq/fzf) |
 
+### Log/prompts options
+
+| Option        | Description                  |
+| ------------- | ---------------------------- |
+| `--limit <n>` | Max messages (default: 50)   |
+| `--full`      | Do not truncate message text |
+
 ### Examples
 
 ```bash
@@ -112,6 +140,9 @@ sesh search justfile
 sesh search justfile --content --since 7d
 sesh search justfile --json | jq '.[].title'
 sesh search shell --fuzzy
+sesh log ses_xxxxxxxxxxxxxxxxxxxx
+sesh prompts ses_xxxxxxxxxxxxxxxxxxxx --full
+sesh resume ses_xxxxxxxxxxxxxxxxxxxx
 sesh files ses_xxxxxxxxxxxxxxxxxxxx
 sesh config
 ```
@@ -133,14 +164,16 @@ sesh (bash) ──> SQLite DB ──> Results
 
 The `sesh` script queries `~/.local/share/opencode/opencode.db` directly using SQLite. It is a standalone bash script with no dependencies beyond `sqlite3` (which is installed on most systems).
 
+OpenCode stores session metadata in `session`, message metadata in `message`, and actual text content in `part.data` rows where `type = "text"`. Commands such as `search --content`, `show`, `log`, and `prompts` join `message` with `part` so they show real prompt/response text instead of metadata-only placeholders.
+
 ## Limitations
 
 The OpenCode database has a read-only schema — sesh cannot change what's stored.
 
-- **Prompt text is not persisted.** User messages store only metadata (role, file diffs). The actual text you type is not saved, so `--content` search matches against the raw JSON blob — file paths, model names, token counts — not the prompts themselves.
-- **Assistant responses are metadata-only.** Tool call output, reasoning, and full responses are not stored. `show` displays what's available (model, tokens, finish reason).
-- **No session title search before the rewrite.** Older sessions (before the v2 schema) stored titles in `summary.title` and are still searchable. Newer sessions derive the title from the session table.
+- **Plain text is stored in `part.data`.** `sesh` reads text parts for prompts/responses. Non-text parts may contain tool metadata, reasoning, or attachments and are intentionally not expanded in the simple log view.
+- **Tool output is not a full terminal transcript.** OpenCode stores structured parts and message metadata, not necessarily every rendered byte you saw in the TUI.
 - **Plugin returns plain text.** OpenCode plugin tools cannot render interactive UI, popups, or rich formatting. Commands like `interactive` and `fzf`-based flows work only in the terminal.
+- **Resume is command-only.** `sesh resume <id>` prints `opencode -s <id>` so you can run it from any directory.
 
 ## License
 
