@@ -191,19 +191,19 @@ cmd_search() {
     where_clause="$title_dir_condition"
 
     if (( search_content )); then
-      local msg_conditions=()
+      local part_conditions=()
       for word in "${words[@]}"; do
-        msg_conditions+=("m.data LIKE '%${word}%'")
+        part_conditions+=("json_extract(p.data, '$.text') LIKE '%${word}%'")
       done
-      local msg_condition
-      msg_condition=$(IFS=' OR '; echo "${msg_conditions[*]}")
-      where_clause="($where_clause OR EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id AND ($msg_condition)))"
+      local part_condition
+      part_condition=$(IFS=' OR '; echo "${part_conditions[*]}")
+      where_clause="($where_clause OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND json_extract(p.data, '$.type') = 'text' AND ($part_condition)))"
     fi
   else
     where_clause="(s.title LIKE '${query_pattern}' OR s.directory LIKE '${query_pattern}')"
 
     if (( search_content )); then
-      where_clause="($where_clause OR EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id AND m.data LIKE '${query_pattern}'))"
+      where_clause="($where_clause OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND json_extract(p.data, '$.type') = 'text' AND json_extract(p.data, '$.text') LIKE '${query_pattern}'))"
     fi
   fi
 
