@@ -5,7 +5,10 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "shellcheck": "shellcheck sesh test/e2e.sh",
+    "test": "bash test/e2e.sh",
+    "check": "npm run shellcheck && npm run build && npm test"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"
