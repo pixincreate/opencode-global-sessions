@@ -26,9 +26,14 @@ You work on multiple projects with OpenCode. Sometimes you start a session in pr
 
 ## Installation
 
-### Terminal CLI (Recommended)
+`sesh` has two parts:
 
-Download the `sesh` script and install it to your PATH:
+1. **Terminal CLI** - the `sesh` shell script. This is the core tool.
+2. **OpenCode plugin** - an optional wrapper that lets you call the CLI from OpenCode.
+
+### Option 1: Terminal CLI only (recommended)
+
+Install only the shell script if you just want `sesh` in your terminal:
 
 ```bash
 # Download sesh
@@ -42,15 +47,21 @@ cp sesh ~/.local/bin/
 sesh list
 ```
 
-### OpenCode Plugin (Optional)
+This does **not** require cloning the repo.
 
-If you want to use `/sessions-global` from within OpenCode, you need to build the plugin:
+### Option 2: Clone repo + OpenCode plugin
+
+Use this if you want `/sessions-global` inside OpenCode. For the current plugin, yes: clone the repo, build it, and point OpenCode at the cloned directory.
 
 ```bash
 git clone https://github.com/pixincreate/opencode-global-sessions.git
 cd opencode-global-sessions
-npm install && npm run build
-cp sesh ~/.local/bin/
+npm install
+npm run build
+
+# Install the CLI too. The plugin shells out to this binary.
+chmod +x sesh
+cp sesh ~/.local/bin/sesh
 ```
 
 Add to `~/.config/opencode/opencode.jsonc`:
@@ -67,20 +78,45 @@ Add to `~/.config/opencode/opencode.jsonc`:
 }
 ```
 
-**Note:** OpenCode plugins cannot render popups or interactive UI. The `/sessions-global` command returns plain text output, just like running `sesh` from terminal.
+Restart OpenCode after changing plugin config.
+
+### Option 3: Development symlink
+
+For local development, symlink instead of copy so CLI changes reflect immediately:
+
+```bash
+git clone https://github.com/pixincreate/opencode-global-sessions.git
+cd opencode-global-sessions
+npm install
+npm run build
+
+ln -sf "$PWD/sesh" ~/.local/bin/sesh
+```
+
+Keep the same OpenCode plugin config as Option 2, pointing at the cloned repo directory.
+
+### Future option: npm plugin
+
+OpenCode can load npm plugins directly from the `plugin` config and install them automatically. If this project is published as an npm package later, the plugin install could become:
+
+```json
+{
+  "plugin": ["opencode-global-sessions"]
+}
+```
+
+Until then, the OpenCode plugin path must point at a local clone/build of this repo. The terminal CLI install still works without cloning.
+
+### Plugin UI note
+
+The current `sesh` OpenCode plugin is a server/tool plugin: it returns plain text output, just like running `sesh` from terminal.
+
+OpenCode also has a separate TUI plugin system (`tui.json`) that can register routes, keybinds, dialogs, and UI components. `sesh` does not implement that yet. A native popup/session browser is possible as a future TUI plugin, but it would be separate from the current plain-text `/sessions-global` wrapper.
 
 Set `SESH_BIN` in your shell config if sesh is not at `~/.local/bin/sesh`:
 
 ```bash
 export SESH_BIN="/path/to/sesh"
-```
-
-### Development symlink
-
-For local development, symlink instead of copy so changes reflect immediately:
-
-```bash
-ln -sf /path/to/opencode-global-sessions/sesh ~/.local/bin/sesh
 ```
 
 ### Development checks
@@ -172,7 +208,7 @@ The OpenCode database has a read-only schema — sesh cannot change what's store
 
 - **Plain text is stored in `part.data`.** `sesh` reads text parts for prompts/responses. Non-text parts may contain tool metadata, reasoning, or attachments and are intentionally not expanded in the simple log view.
 - **Tool output is not a full terminal transcript.** OpenCode stores structured parts and message metadata, not necessarily every rendered byte you saw in the TUI.
-- **Plugin returns plain text.** OpenCode plugin tools cannot render interactive UI, popups, or rich formatting. Commands like `interactive` and `fzf`-based flows work only in the terminal.
+- **Current plugin returns plain text.** The existing `/sessions-global` wrapper is a server/tool plugin, not a TUI plugin. Commands like `interactive` and `fzf`-based flows work only in the terminal unless a separate TUI plugin is added later.
 - **Resume is command-only.** `sesh resume <id>` prints `opencode -s <id>` so you can run it from any directory.
 
 ## License
