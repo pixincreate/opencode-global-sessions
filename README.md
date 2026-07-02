@@ -16,12 +16,12 @@ You work on multiple projects with OpenCode. Sometimes you start a session in pr
 
 ## Quick Use
 
-| Where    | Command                            |
-| -------- | ---------------------------------- |
-| Terminal | `sesh list`                        |
-| Terminal | `sesh log <session_id>`            |
-| Terminal | `sesh resume <session_id>`         |
-| OpenCode | `/sessions-global`                 |
+| Where    | Command                    |
+| -------- | -------------------------- |
+| Terminal | `sesh list`                |
+| Terminal | `sesh log <session_id>`    |
+| Terminal | `sesh resume <session_id>` |
+| OpenCode | `/sessions-global`         |
 
 ## Installation
 
@@ -67,9 +67,7 @@ Add to `~/.config/opencode/tui.jsonc`:
 
 ```json
 {
-  "plugin": [
-    ["/path/to/opencode-global-sessions/dist/tui.js", { "limit": 50 }]
-  ]
+  "plugin": [["/path/to/opencode-global-sessions/dist/tui.js", { "limit": 50 }]]
 }
 ```
 
@@ -89,9 +87,7 @@ Then commit this portable `~/.config/opencode/tui.jsonc`:
 
 ```json
 {
-  "plugin": [
-    ["{env:SESH_TUI_PLUGIN}", { "limit": 50 }]
-  ]
+  "plugin": [["{env:SESH_TUI_PLUGIN}", { "limit": 50 }]]
 }
 ```
 
@@ -127,7 +123,10 @@ Attach the generated `opencode-global-sessions-*.tgz` file to a GitHub release. 
 ```json
 {
   "plugin": [
-    ["https://github.com/pixincreate/opencode-global-sessions/releases/download/v1.0.0/opencode-global-sessions-1.0.0.tgz", { "limit": 50 }]
+    [
+      "https://github.com/pixincreate/opencode-global-sessions/releases/download/v1.0.0/opencode-global-sessions-1.0.0.tgz",
+      { "limit": 50 }
+    ]
   ]
 }
 ```
@@ -184,36 +183,36 @@ The test database is generated under a temp directory and does not read your rea
 
 ## Usage
 
-| Command          | Description                           |
-| ---------------- | ------------------------------------- |
+| Command          | Description                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------------------- |
 | `list [n]`       | List n recent non-subagent sessions (default: 10). Add `--json` for machine-readable output. |
-| `search <query>` | Global search across titles, directories, prompts, and responses |
-| `show <id>`      | Show full session details             |
-| `log <id>`       | Show user + assistant text log        |
-| `prompts <id>`   | Show user prompts only                |
-| `resume <id>`    | Print `opencode -s <id>`              |
-| `files <id>`     | List files touched in a session       |
-| `today`          | Sessions from the last 24 hours       |
-| `stats`          | Aggregate session statistics          |
-| `config`         | Show configuration and environment    |
+| `search <query>` | Global search across titles, directories, prompts, and responses                             |
+| `show <id>`      | Show full session details                                                                    |
+| `log <id>`       | Show user + assistant text log                                                               |
+| `prompts <id>`   | Show user prompts only                                                                       |
+| `resume <id>`    | Print `opencode -s <id>`                                                                     |
+| `files <id>`     | List files touched in a session                                                              |
+| `today`          | Sessions from the last 24 hours                                                              |
+| `stats`          | Aggregate session statistics                                                                 |
+| `config`         | Show configuration and environment                                                           |
 
 ### Search options
 
-| Option           | Description                                   |
-| ---------------- | --------------------------------------------- |
+| Option           | Description                                                  |
+| ---------------- | ------------------------------------------------------------ |
 | `--content`      | Search message content too (default; kept for compatibility) |
-| `--since <date>` | Filter by start date (ISO 8601 or `7d`)       |
-| `--until <date>` | Filter by end date                            |
-| `--limit <n>`    | Max results (default: 20)                     |
-| `--fuzzy`        | Broader substring matching                    |
-| `--json`         | Machine-readable JSON output (pipe to jq/fzf) |
-| `--verbose`      | Include OpenCode subagent sessions            |
+| `--since <date>` | Filter by start date (ISO 8601 or `7d`)                      |
+| `--until <date>` | Filter by end date                                           |
+| `--limit <n>`    | Max results (default: 20)                                    |
+| `--fuzzy`        | Broader substring matching                                   |
+| `--json`         | Machine-readable JSON output (pipe to jq/fzf)                |
+| `--verbose`      | Include OpenCode subagent sessions                           |
 
 ### Log/prompts options
 
-| Option        | Description                  |
-| ------------- | ---------------------------- |
-| `--limit <n>` | Max messages (default: 50)   |
+| Option        | Description                                              |
+| ------------- | -------------------------------------------------------- |
+| `--limit <n>` | Max messages (default: 50)                               |
 | `--full`      | Show full message text (default; kept for compatibility) |
 
 ### Subagent sessions
