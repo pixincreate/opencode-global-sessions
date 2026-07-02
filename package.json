@@ -10,7 +10,8 @@
   "scripts": {
     "build": "node build.mjs",
     "prepack": "npm run build",
-    "shellcheck": "shellcheck sesh test/e2e.sh",
+    "release": "bash scripts/release.sh",
+    "shellcheck": "shellcheck sesh test/e2e.sh scripts/release.sh",
     "test": "bash test/e2e.sh",
     "check": "npm run shellcheck && npm run build && npm test"
   },
