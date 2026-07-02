@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, for example v1.0.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Set up Node.js 26.4.0
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26.4.0
+          cache: npm
+
+      - name: Install ShellCheck and SQLite
+        run: sudo apt-get update && sudo apt-get install -y shellcheck sqlite3
+
+      - name: Install npm dependencies with clean lockfile
+        run: npm ci
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Build release tarball
+        run: |
+          mkdir -p release
+          npm pack --pack-destination release
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3.0.1
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: opencode-global-sessions ${{ github.event.inputs.tag || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            Install the CLI from `sesh`, and use the attached npm tarball as the OpenCode TUI plugin package.
+
+            See README.md for setup.
+          files: release/*.tgz
