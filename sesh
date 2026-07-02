@@ -2,7 +2,6 @@
 set -euo pipefail
 
 DB="${OPENCODE_DB:-${HOME}/.local/share/opencode/opencode.db}"
-SESH_LIST_CMD="${SESH_LIST_CMD:-list}"  # for interactive mode
 
 
 usage() {
@@ -10,8 +9,9 @@ usage() {
 sesh - Global session search for OpenCode
 
 Usage:
-  sesh list [n]                     List n recent sessions (default: 10)
-  sesh search <query> [options]     Search sessions by title/directory/message
+  sesh list [n] [--json] [--verbose]
+                                      List n recent sessions (default: 10)
+  sesh search <query> [options]     Search sessions globally by title/directory/message
   sesh show <id>                    Show full session details
   sesh log <id> [options]           Show user + assistant text log
   sesh prompts <id> [options]       Show user prompts only
@@ -20,25 +20,24 @@ Usage:
   sesh stats                        Aggregate session statistics
   sesh files <id>                   List files touched in a session
   sesh config                       Show configuration and env
-  sesh interactive                  Browse sessions interactively
   sesh help                         Show this help
 
 Search options:
-  --content                   Also search message content (slower)
+  --content                   Search message content too (default)
   --since <date>              Filter by start date (ISO 8601 or '7d', '30d')
   --until <date>              Filter by end date
   --limit <n>                 Max results (default: 20)
   --fuzzy                     Broader substring matching
   --json                      Output in JSON format (pipe to jq, fzf)
+  --verbose                   Include OpenCode subagent sessions
 Log/prompts options:
   --limit <n>                 Max messages (default: 50)
-  --full                      Do not truncate message text
+  --full                      Show full message text (default)
 Environment:
   OPENCODE_DB                 Path to opencode.db (default: ~/.local/share/opencode/opencode.db)
   SESH_BIN                    Path to sesh binary (for plugin, not CLI)
 Examples:
   sesh search justfile
-  sesh search justfile --content
   sesh search hyperswitch --since 7d --limit 5
   sesh show ses_xxxxxxxxxxxxxxxxxxxx
   sesh log ses_xxxxxxxxxxxxxxxxxxxx
@@ -66,6 +65,16 @@ ensure_session_exists() {
   if [[ "$exists" -eq 0 ]]; then
     echo "Error: session not found: ${sid}" >&2
     exit 1
+  fi
+}
+
+session_filter_clause() {
+  local alias="$1"
+  local verbose="$2"
+  if (( verbose )); then
+    echo "1=1"
+  else
+    echo "${alias}.title NOT LIKE '%(@% subagent)%'"
   fi
 }
 
@@ -135,37 +144,99 @@ format_session_row() {
 }
 
 cmd_list() {
-  local limit="${1:-10}"
+  local limit=10
+  local json_output=0
+  local verbose=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json_output=1; shift;;
+      --verbose) verbose=1; shift;;
+      -h|--help) usage; exit 0;;
+      -*)
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+      *)
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+          limit="$1"
+          shift
+        else
+          echo "Error: limit must be a positive number" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+
   if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
     echo "Error: limit must be a positive number" >&2
     exit 1
   fi
 
-  sqlite3 -header -column "$DB" "
-    SELECT id, directory, title, datetime(time_created/1000,'unixepoch') as created
-    FROM session
-    ORDER BY time_created DESC
+  local sql
+  local session_filter
+  session_filter="$(session_filter_clause s "$verbose")"
+  sql="
+    SELECT s.id,
+           s.directory,
+           s.title,
+           datetime(s.time_created/1000,'unixepoch') as created,
+           datetime(s.time_updated/1000,'unixepoch') as updated,
+           (SELECT count(*) FROM message m WHERE m.session_id = s.id) as message_count
+    FROM session s
+    WHERE ${session_filter}
+    ORDER BY s.time_created DESC
     LIMIT $limit;
   "
+
+  if (( json_output )); then
+    sqlite3 -json "$DB" "$sql"
+  else
+    sqlite3 -header -column "$DB" "$sql"
+  fi
 }
 
 cmd_search() {
   local query=""
-  local search_content=0
+  local search_content=1
   local since=""
   local until=""
   local limit=20
   local fuzzy=0
   local json_output=0
+  local verbose=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --content) search_content=1; shift;;
-      --since|--after) since="$2"; shift 2;;
-      --until|--before) until="$2"; shift 2;;
-      --limit) limit="$2"; shift 2;;
+      --since|--after)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: $1 requires a value" >&2
+          exit 1
+        fi
+        since="$2"
+        shift 2
+        ;;
+      --until|--before)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: $1 requires a value" >&2
+          exit 1
+        fi
+        until="$2"
+        shift 2
+        ;;
+      --limit)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --limit requires a value" >&2
+          exit 1
+        fi
+        limit="$2"
+        shift 2
+        ;;
       --fuzzy) fuzzy=1; shift;;
       --json) json_output=1; shift;;
+      --verbose) verbose=1; shift;;
       -h|--help) usage; exit 0;;
       -*)
         echo "Error: Unknown option: $1" >&2
@@ -180,7 +251,7 @@ cmd_search() {
 
   if [[ -z "$query" ]]; then
     echo "Error: search requires a query argument" >&2
-    echo "Usage: sesh search <query> [--content] [--since 7d] [--until 2026-06-01] [--limit 20]" >&2
+    echo "Usage: sesh search <query> [--since 7d] [--until 2026-06-01] [--limit 20]" >&2
     exit 1
   fi
 
@@ -204,8 +275,11 @@ cmd_search() {
     for word in "${words[@]}"; do
       fuzzy_conditions+=("(s.title LIKE '%${word}%' OR s.directory LIKE '%${word}%')")
     done
-    local title_dir_condition
-    title_dir_condition=$(IFS=' OR '; echo "${fuzzy_conditions[*]}")
+    local title_dir_condition="${fuzzy_conditions[0]}"
+    local i
+    for ((i = 1; i < ${#fuzzy_conditions[@]}; i++)); do
+      title_dir_condition="${title_dir_condition} OR ${fuzzy_conditions[$i]}"
+    done
 
     where_clause="$title_dir_condition"
 
@@ -214,8 +288,10 @@ cmd_search() {
       for word in "${words[@]}"; do
         part_conditions+=("json_extract(p.data, '$.text') LIKE '%${word}%'")
       done
-      local part_condition
-      part_condition=$(IFS=' OR '; echo "${part_conditions[*]}")
+      local part_condition="${part_conditions[0]}"
+      for ((i = 1; i < ${#part_conditions[@]}; i++)); do
+        part_condition="${part_condition} OR ${part_conditions[$i]}"
+      done
       where_clause="($where_clause OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND json_extract(p.data, '$.type') = 'text' AND ($part_condition)))"
     fi
   else
@@ -243,9 +319,11 @@ cmd_search() {
   fi
 
   local sql
+  local session_filter
+  session_filter="$(session_filter_clause s "$verbose")"
   sql="SELECT s.id, s.directory, s.title, datetime(s.time_created/1000,'unixepoch') as created
 FROM session s
-WHERE ${where_clause}${date_condition}
+WHERE (${where_clause}) AND ${session_filter}${date_condition}
 ORDER BY s.time_created DESC
 LIMIT $limit;"
 
@@ -356,7 +434,6 @@ cmd_messages() {
   fi
 
   local limit=50
-  local full=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --limit)
@@ -367,7 +444,7 @@ cmd_messages() {
         limit="$2"
         shift 2
         ;;
-      --full) full=1; shift;;
+      --full) shift;;
       -h|--help)
         echo "Usage: sesh ${mode} <session_id> [--limit n] [--full]"
         exit 0
@@ -398,11 +475,7 @@ cmd_messages() {
   echo ""
 
   local text_expr
-  if (( full )); then
-    text_expr="replace(COALESCE(tp.text, ''), char(10), '\\n')"
-  else
-    text_expr="substr(replace(COALESCE(tp.text, ''), char(10), ' '), 1, 500)"
-  fi
+  text_expr="replace(COALESCE(tp.text, ''), char(10), '\\n')"
 
   sqlite3 -separator $'\t' "$DB" "
     WITH text_parts AS (
@@ -443,34 +516,78 @@ cmd_resume() {
 }
 
 cmd_today() {
+  local verbose=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --verbose) verbose=1; shift;;
+      -h|--help)
+        echo "Usage: sesh today [--verbose]"
+        exit 0
+        ;;
+      *)
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local session_filter
+  session_filter="$(session_filter_clause s "$verbose")"
   sqlite3 -header -column "$DB" "
     SELECT id, directory, title, datetime(time_created/1000,'unixepoch') as created
-    FROM session
-    WHERE time_created > (strftime('%s','now') - 86400) * 1000
-    ORDER BY time_created DESC
+    FROM session s
+    WHERE s.time_created > (strftime('%s','now') - 86400) * 1000
+      AND ${session_filter}
+    ORDER BY s.time_created DESC
     LIMIT 20;
   "
 }
 
 cmd_stats() {
+  local verbose=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --verbose) verbose=1; shift;;
+      -h|--help)
+        echo "Usage: sesh stats [--verbose]"
+        exit 0
+        ;;
+      *)
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local session_filter
+  session_filter="$(session_filter_clause s "$verbose")"
+
   echo "Session statistics"
 
   sqlite3 -separator $'\n' "$DB" "
-    SELECT 'Total sessions:      ' || count(*) FROM session
+    WITH filtered_sessions AS (
+      SELECT * FROM session s WHERE ${session_filter}
+    )
+    SELECT 'Total sessions:      ' || count(*) FROM filtered_sessions
     UNION ALL
-    SELECT 'Total messages:      ' || count(*) FROM message
+    SELECT 'Total messages:      ' || count(*)
+    FROM message m
+    WHERE EXISTS (SELECT 1 FROM filtered_sessions s WHERE s.id = m.session_id)
     UNION ALL
-    SELECT 'Total projects:      ' || count(DISTINCT project_id) FROM session
+    SELECT 'Total projects:      ' || count(DISTINCT project_id) FROM filtered_sessions
     UNION ALL
-    SELECT 'Total directories:   ' || count(DISTINCT directory) FROM session;
+    SELECT 'Total directories:   ' || count(DISTINCT directory) FROM filtered_sessions;
   "
 
   echo ""
   echo "Date range"
   sqlite3 -separator $'\n' "$DB" "
-    SELECT 'Earliest:   ' || datetime(MIN(time_created)/1000,'unixepoch') FROM session
+    WITH filtered_sessions AS (
+      SELECT * FROM session s WHERE ${session_filter}
+    )
+    SELECT 'Earliest:   ' || datetime(MIN(time_created)/1000,'unixepoch') FROM filtered_sessions
     UNION ALL
-    SELECT 'Latest:     ' || datetime(MAX(time_created)/1000,'unixepoch') FROM session;
+    SELECT 'Latest:     ' || datetime(MAX(time_created)/1000,'unixepoch') FROM filtered_sessions;
   "
 
   echo ""
@@ -479,7 +596,8 @@ cmd_stats() {
     SELECT '  ' || printf('%3d', cnt) || ' ' || dir || ''
     FROM (
       SELECT directory as dir, count(*) as cnt
-      FROM session
+      FROM session s
+      WHERE ${session_filter}
       GROUP BY directory
       ORDER BY cnt DESC
       LIMIT 10
@@ -490,16 +608,16 @@ cmd_stats() {
   echo "Token usage (all time)"
   sqlite3 -separator $'\n' "$DB" "
     SELECT 'Total cost:       ' || printf('%.4f', COALESCE(SUM(cost), 0))
-    FROM session
+    FROM session s WHERE ${session_filter}
     UNION ALL
     SELECT 'Total input tokens: ' || COALESCE(SUM(tokens_input), 0)
-    FROM session
+    FROM session s WHERE ${session_filter}
     UNION ALL
     SELECT 'Total output tokens:' || COALESCE(SUM(tokens_output), 0)
-    FROM session
+    FROM session s WHERE ${session_filter}
     UNION ALL
     SELECT 'Total reasoning tokens:' || COALESCE(SUM(tokens_reasoning), 0)
-    FROM session;
+    FROM session s WHERE ${session_filter};
   "
 }
 
@@ -562,81 +680,6 @@ cmd_config() {
   echo "- Set SESH_BIN for the plugin to find sesh in nonstandard locations"
 }
 
-cmd_interactive() {
-  if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
-    echo "Interactive mode requires a terminal. Falling back to list." >&2
-    cmd_list 10
-    exit 0
-  fi
-
-  local limit="${1:-30}"
-  if [[ ! "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]]; then
-    limit=30
-  fi
-
-  echo "sesh interactive - Select a session to inspect"
-  echo "Enter number, or 'q' to quit, 'r' to refresh"
-  echo ""
-
-  while true; do
-    local sessions
-    sessions=$(sqlite3 "$DB" "
-      SELECT id, directory, title, time_created
-      FROM session
-      ORDER BY time_created DESC
-      LIMIT $limit;
-    ")
-
-    local IFS=$'\n'
-    local ids=()
-    local i=1
-
-    echo "#  ID              Directory                      Title                                                   When"
-    echo "-- -------------- ------------------------------ ------------------------------------------------------ -----"
-
-    while IFS='|' read -r id dir title epoch; do
-      ids+=("$id")
-      local ago
-      ago=$(time_ago "$((epoch / 1000))")
-
-      local short_id="${id:0:12}..."
-      local short_dir
-      short_dir=$(basename "$dir" 2>/dev/null || echo "$dir")
-      if [[ ${#short_dir} -gt 28 ]]; then
-        short_dir="${short_dir:0:25}..."
-      fi
-      if [[ ${#title} -gt 52 ]]; then
-        title="${title:0:49}..."
-      fi
-
-      printf "%-3s %-14s %-30s %-54s %s\n" "$i" "$short_id" "$short_dir" "$title" "$ago"
-      ((i++))
-    done <<< "$sessions"
-
-    echo ""
-    read -r -p "Select [1-$((i-1))] (q/r): " choice
-
-    case "$choice" in
-      q|Q) echo "Bye!"; exit 0;;
-      r|R) clear; continue;;
-      *)
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -lt "$i" ]]; then
-          local idx=$((choice - 1))
-          local selected_id="${ids[$idx]}"
-          clear
-          cmd_show "$selected_id"
-          echo ""
-          read -r -p "Press Enter to continue..."
-          clear
-        else
-          echo "Invalid choice"
-          sleep 1
-        fi
-        ;;
-    esac
-  done
-}
-
 cmd="${1:-list}"
 shift 2>/dev/null || true
 
@@ -649,9 +692,8 @@ case "$cmd" in
   resume)     cmd_resume "${1:-}";;
   files)      cmd_files "${1:-}";;
   config)     cmd_config;;
-  today)      cmd_today;;
-  stats)      cmd_stats;;
-  interactive|browse) cmd_interactive "${1:-}";;
+  today)      cmd_today "$@";;
+  stats)      cmd_stats "$@";;
   help|--help|-h) usage; exit 0;;
   *)
     echo "Error: Unknown command '$cmd'" >&2
