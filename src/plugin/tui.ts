@@ -64,7 +64,8 @@ type TuiPlugin = (
   meta: unknown,
 ) => Promise<void>;
 
-const getSeshBin = () => process.env.SESH_BIN || `${process.env.HOME}/.local/bin/sesh`;
+const getSeshBin = () =>
+  process.env.SESH_BIN || `${process.env.HOME}/.local/bin/sesh`;
 
 const parseLimit = (options: unknown): number => {
   if (!options || typeof options !== "object" || !("limit" in options)) {
@@ -107,7 +108,9 @@ const formatDirectory = (directory: string): string => {
   return parts.at(-1) || directory || "unknown";
 };
 
-const sessionOption = (session: SessionRow): DialogSelectOption<SessionRow> => ({
+const sessionOption = (
+  session: SessionRow,
+): DialogSelectOption<SessionRow> => ({
   title: session.title || "(untitled)",
   value: session,
   description: formatDirectory(session.directory),
@@ -116,7 +119,12 @@ const sessionOption = (session: SessionRow): DialogSelectOption<SessionRow> => (
 });
 
 const errorMessage = (error: unknown): string => {
-  if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "ENOENT"
+  ) {
     return `sesh binary not found at ${getSeshBin()}. Install it to ~/.local/bin or set SESH_BIN.`;
   }
 
