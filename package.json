@@ -2,10 +2,14 @@
   "name": "opencode-global-sessions",
   "version": "1.0.0",
   "description": "Global session search for OpenCode",
-  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/tui.js",
+    "./tui": "./dist/tui.js"
+  },
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
+    "prepack": "npm run build",
     "shellcheck": "shellcheck sesh test/e2e.sh",
     "test": "bash test/e2e.sh",
     "check": "npm run shellcheck && npm run build && npm test"
@@ -14,7 +18,8 @@
     "esbuild": "^0.28.1"
   },
   "files": [
-    "dist",
+    "dist/tui.js",
+    "dist/tui.js.map",
     "sesh"
   ],
   "repository": {
