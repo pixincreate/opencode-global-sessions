@@ -25,18 +25,17 @@ After poking around OpenCode's local database and running SQL against `~/.local`
 
 ## Installation
 
-There are two parts:
+### One-line install
 
-1. the `sesh` CLI
-2. the optional OpenCode TUI plugin
+The installer installs both parts:
 
-The plugin needs the CLI. Install the CLI first.
+- the `sesh` CLI at `~/.local/bin/sesh`
+- the OpenCode TUI plugin entry in `~/.config/opencode/tui.jsonc`
 
-### 1. Install the CLI
+By default it uses the latest GitHub release: the CLI is downloaded from that release tag, and the plugin entry points OpenCode at the release tarball.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/sesh -o ~/.local/bin/sesh
-chmod +x ~/.local/bin/sesh
+curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash
 ```
 
 Check it:
@@ -45,66 +44,27 @@ Check it:
 sesh list
 ```
 
-### 2. Install the OpenCode TUI plugin
-
-After a GitHub release exists, add the release tarball to `~/.config/opencode/tui.jsonc`:
-
-```jsonc
-{
-  "plugin": [
-    [
-      "https://github.com/pixincreate/opencode-global-sessions/releases/download/vX.Y.Z/opencode-global-sessions-X.Y.Z.tgz",
-      { "limit": 50 },
-    ],
-  ],
-}
-```
-
-Replace `X.Y.Z` with the release version.
-
 Restart OpenCode and run:
 
 ```text
 /sessions-global
 ```
 
+To install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --version 1.0.0
+```
+
 ### Development install
 
-Use this before a release exists, or when working on the plugin locally:
+Use clone mode when working on the plugin locally. It clones the repo, builds the plugin, symlinks the CLI to `~/.local/bin/sesh`, and points OpenCode at the local `dist/tui.js`.
 
 ```bash
-git clone https://github.com/pixincreate/opencode-global-sessions.git
-cd opencode-global-sessions
-npm install
-npm run build
-ln -sf "$PWD/sesh" ~/.local/bin/sesh
+curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --clone
 ```
 
-Then point OpenCode at the built plugin:
-
-```jsonc
-{
-  "plugin": [
-    ["/absolute/path/to/opencode-global-sessions/dist/tui.js", { "limit": 50 }],
-  ],
-}
-```
-
-If you do not want an absolute path in your dotfiles, use an env var:
-
-```jsonc
-{
-  "plugin": [["{env:SESH_TUI_PLUGIN}", { "limit": 50 }]],
-}
-```
-
-Then set it locally:
-
-```bash
-export SESH_TUI_PLUGIN="/absolute/path/to/opencode-global-sessions/dist/tui.js"
-```
-
-If the CLI is not at `~/.local/bin/sesh`, set:
+If you keep the CLI somewhere else, tell the plugin where it is:
 
 ```bash
 export SESH_BIN="/absolute/path/to/sesh"
@@ -112,22 +72,15 @@ export SESH_BIN="/absolute/path/to/sesh"
 
 ## Uninstallation
 
-Remove the CLI:
+Run the installer in uninstall mode:
 
 ```bash
-rm -f ~/.local/bin/sesh
+curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --uninstall
 ```
 
-Remove the plugin entry from:
-
-```text
-~/.config/opencode/tui.jsonc
-```
-
-If you set these env vars, remove them from your shell config too:
+This removes `~/.local/bin/sesh` and the installer-managed OpenCode plugin entry. If you set this env var manually, remove it from your shell config too:
 
 ```bash
-SESH_TUI_PLUGIN
 SESH_BIN
 ```
 
