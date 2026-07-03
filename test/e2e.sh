@@ -321,6 +321,67 @@ fi
 missing_db_err="$(<"$TMPDIR/missing-db.err")"
 assert_contains "$missing_db_err" "Database not found"
 
+installer_home="$TMPDIR/installer-home"
+installer_bin="$installer_home/.local/bin"
+installer_config="$installer_home/.config/opencode/tui.jsonc"
+SESH_INSTALL_BIN_DIR="$installer_bin" \
+  SESH_INSTALL_CONFIG="$installer_config" \
+  SESH_INSTALL_STATE_DIR="$installer_home/.local/share/opencode-global-sessions" \
+  SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+  SESH_INSTALL_PLUGIN_SPEC="https://example.test/opencode-global-sessions-1.0.0.tgz" \
+  "$ROOT/scripts/install.sh" --version 1.0.0 >"$TMPDIR/install.out"
+[[ -x "$installer_bin/sesh" ]] || { printf 'Expected installer to create executable sesh\n' >&2; exit 1; }
+installer_config_content="$(<"$installer_config")"
+assert_contains "$installer_config_content" "opencode-global-sessions:start"
+assert_contains "$installer_config_content" "https://example.test/opencode-global-sessions-1.0.0.tgz"
+
+SESH_INSTALL_BIN_DIR="$installer_bin" \
+  SESH_INSTALL_CONFIG="$installer_config" \
+  SESH_INSTALL_STATE_DIR="$installer_home/.local/share/opencode-global-sessions" \
+  "$ROOT/scripts/install.sh" --uninstall >"$TMPDIR/uninstall.out"
+[[ ! -e "$installer_bin/sesh" ]] || { printf 'Expected uninstall to remove sesh\n' >&2; exit 1; }
+installer_config_after_uninstall="$(<"$installer_config")"
+assert_not_contains "$installer_config_after_uninstall" "opencode-global-sessions:start"
+
+fake_repo="$TMPDIR/fake-repo"
+mkdir -p "$fake_repo/dist"
+cp "$ROOT/sesh" "$fake_repo/sesh"
+chmod +x "$fake_repo/sesh"
+cat >"$fake_repo/package.json" <<'JSON'
+{
+  "scripts": {
+    "build": "mkdir -p dist && cp tui-source.js dist/tui.js"
+  }
+}
+JSON
+printf 'export default { id: "fake" }\n' >"$fake_repo/tui-source.js"
+git -C "$fake_repo" init -q
+git -C "$fake_repo" add .
+git -C "$fake_repo" -c user.email=test@example.com -c user.name=test commit -qm init
+
+clone_home="$TMPDIR/clone-home"
+clone_state="$clone_home/.local/share/opencode-global-sessions"
+clone_repo="$clone_state/repo"
+clone_bin="$clone_home/.local/bin"
+clone_config="$clone_home/.config/opencode/tui.jsonc"
+SESH_INSTALL_BIN_DIR="$clone_bin" \
+  SESH_INSTALL_CONFIG="$clone_config" \
+  SESH_INSTALL_STATE_DIR="$clone_state" \
+  SESH_INSTALL_REPO_DIR="$clone_repo" \
+  SESH_INSTALL_REPO_URL="$fake_repo" \
+  "$ROOT/scripts/install.sh" --clone >"$TMPDIR/clone-install.out"
+[[ -L "$clone_bin/sesh" ]] || { printf 'Expected clone install to symlink sesh\n' >&2; exit 1; }
+clone_config_content="$(<"$clone_config")"
+assert_contains "$clone_config_content" "$clone_repo/dist/tui.js"
+
+SESH_INSTALL_BIN_DIR="$clone_bin" \
+  SESH_INSTALL_CONFIG="$clone_config" \
+  SESH_INSTALL_STATE_DIR="$clone_state" \
+  SESH_INSTALL_REPO_DIR="$clone_repo" \
+  "$ROOT/scripts/install.sh" --uninstall >"$TMPDIR/clone-uninstall.out"
+[[ ! -e "$clone_bin/sesh" ]] || { printf 'Expected clone uninstall to remove sesh symlink\n' >&2; exit 1; }
+[[ ! -e "$clone_repo" ]] || { printf 'Expected clone uninstall to remove managed repo\n' >&2; exit 1; }
+
 tui_output="$(
   cd "$ROOT"
   OPENCODE_DB="$DB" SESH_BIN="$ROOT/sesh" node --input-type=module <<'JS'
