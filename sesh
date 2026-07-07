@@ -16,6 +16,8 @@ Usage:
   sesh log <id> [options]           Show user + assistant text log
   sesh prompts <id> [options]       Show user prompts only
   sesh resume <id>                  Print command to resume a session
+  sesh move <id> <target-project-dir> [--dry-run|--apply]
+                                      Move a session to an existing project
   sesh today                        Sessions from the last 24 hours
   sesh stats                        Aggregate session statistics
   sesh files <id>                   List files touched in a session
@@ -33,6 +35,9 @@ Search options:
 Log/prompts options:
   --limit <n>                 Max messages (default: 50)
   --full                      Show full message text (default)
+Move options:
+  --dry-run                   Preview the move without writing (default)
+  --apply                     Back up the DB, then update the session
 Environment:
   OPENCODE_DB                 Path to opencode.db (default: ~/.local/share/opencode/opencode.db)
   SESH_BIN                    Path to sesh binary (for plugin, not CLI)
@@ -43,6 +48,7 @@ Examples:
   sesh log ses_xxxxxxxxxxxxxxxxxxxx
   sesh prompts ses_xxxxxxxxxxxxxxxxxxxx --full
   sesh resume ses_xxxxxxxxxxxxxxxxxxxx
+  sesh move ses_xxxxxxxxxxxxxxxxxxxx /path/to/project --apply
   sesh search justfile --json | jq '.[].title'
   sesh files ses_xxxxxxxxxxxxxxxxxxxx
 EOF
@@ -56,6 +62,44 @@ fi
 
 escape_sql() {
   printf '%s' "$1" | sed "s/'/''/g"
+}
+
+resolve_path() {
+  local input="$1"
+  local resolved
+  if resolved="$(realpath "$input" 2>/dev/null)"; then
+    printf '%s' "$resolved"
+  else
+    printf '%s' "$input"
+  fi
+}
+
+create_db_backup() {
+  local timestamp
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  local backup="${DB}.sesh-backup-${timestamp}"
+  if [[ -e "$backup" ]]; then
+    backup="${backup}-$$"
+  fi
+  local escaped_backup
+  escaped_backup="$(escape_sql "$backup")"
+
+  if ! sqlite3 "$DB" "VACUUM INTO '${escaped_backup}';"; then
+    echo "Error: failed to create backup at ${backup}" >&2
+    rm -f "$backup"
+    exit 1
+  fi
+
+  printf '%s\n' "$backup"
+}
+
+ensure_project_worktree_column() {
+  local has_worktree
+  has_worktree=$(sqlite3 "$DB" "SELECT count(*) FROM pragma_table_info('project') WHERE name = 'worktree';" 2>/dev/null)
+  if [[ "$has_worktree" != "1" ]]; then
+    echo "Error: unsupported OpenCode schema: project.worktree column not found" >&2
+    exit 1
+  fi
 }
 
 ensure_session_exists() {
@@ -515,6 +559,143 @@ cmd_resume() {
   echo "opencode -s ${sid}"
 }
 
+cmd_move() {
+  local apply=0
+  local dry_run=0
+  local positionals=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --apply)
+        apply=1
+        shift
+        ;;
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      -h|--help)
+        echo "Usage: sesh move <session_id> <target-project-dir> [--dry-run|--apply]"
+        exit 0
+        ;;
+      -* )
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+      *)
+        positionals+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if (( apply && dry_run )); then
+    echo "Error: use only one of --dry-run or --apply" >&2
+    exit 1
+  fi
+
+  if [[ "${#positionals[@]}" -ne 2 ]]; then
+    echo "Error: move requires a session ID and target project directory" >&2
+    echo "Usage: sesh move <session_id> <target-project-dir> [--dry-run|--apply]" >&2
+    exit 1
+  fi
+
+  ensure_project_worktree_column
+
+  local sid="${positionals[0]}"
+  local target_dir="${positionals[1]}"
+  local escaped_sid
+  escaped_sid="$(escape_sql "$sid")"
+  ensure_session_exists "$escaped_sid"
+
+  target_dir="$(resolve_path "$target_dir")"
+  local escaped_target_dir
+  escaped_target_dir="$(escape_sql "$target_dir")"
+
+  local target_count
+  target_count=$(sqlite3 "$DB" "SELECT count(*) FROM project WHERE worktree = '${escaped_target_dir}';" 2>/dev/null)
+  if [[ "$target_count" -eq 0 ]]; then
+    echo "Error: target project not found in OpenCode database: ${target_dir}" >&2
+    echo "Open the target directory in OpenCode once, then retry." >&2
+    exit 1
+  fi
+  if [[ "$target_count" -gt 1 ]]; then
+    echo "Error: multiple OpenCode projects match target directory: ${target_dir}" >&2
+    exit 1
+  fi
+
+  local current_row
+  current_row=$(sqlite3 -separator $'\t' "$DB" "
+    SELECT s.project_id, s.directory
+    FROM session s
+    WHERE s.id = '${escaped_sid}';
+  ")
+
+  local current_project_id current_dir
+  IFS=$'\t' read -r current_project_id current_dir <<< "$current_row"
+
+  local target_row
+  target_row=$(sqlite3 -separator $'\t' "$DB" "
+    SELECT id, worktree
+    FROM project
+    WHERE worktree = '${escaped_target_dir}';
+  ")
+
+  local target_project_id target_worktree
+  IFS=$'\t' read -r target_project_id target_worktree <<< "$target_row"
+
+  if [[ "$current_project_id" == "$target_project_id" && "$current_dir" == "$target_worktree" ]]; then
+    echo "Error: session is already in target project: ${target_worktree}" >&2
+    exit 1
+  fi
+
+  echo "Move session ${sid}"
+  echo ""
+  echo "Current:"
+  echo "  project_id: ${current_project_id}"
+  echo "  directory:   ${current_dir}"
+  echo ""
+  echo "Target:"
+  echo "  project_id: ${target_project_id}"
+  echo "  directory:   ${target_worktree}"
+
+  if (( ! apply )); then
+    echo ""
+    echo "No changes written. Re-run with --apply to update."
+    return
+  fi
+
+  local backup
+  backup="$(create_db_backup)"
+
+  local escaped_target_project_id escaped_target_worktree now_ms changes
+  escaped_target_project_id="$(escape_sql "$target_project_id")"
+  escaped_target_worktree="$(escape_sql "$target_worktree")"
+  now_ms=$(( $(date +%s) * 1000 ))
+
+  changes=$(sqlite3 "$DB" "
+    BEGIN IMMEDIATE;
+    UPDATE session
+    SET project_id = '${escaped_target_project_id}',
+        directory = '${escaped_target_worktree}',
+        time_updated = ${now_ms}
+    WHERE id = '${escaped_sid}';
+    SELECT changes();
+    COMMIT;
+  " 2>/dev/null)
+
+  if [[ "$changes" != "1" ]]; then
+    echo "Error: expected to update 1 session row, updated ${changes:-0}" >&2
+    exit 1
+  fi
+
+  echo ""
+  echo "Backup created: ${backup}"
+  echo "Moved session ${sid}"
+  echo "  project_id: ${current_project_id} -> ${target_project_id}"
+  echo "  directory:   ${current_dir} -> ${target_worktree}"
+}
+
 cmd_today() {
   local verbose=0
   while [[ $# -gt 0 ]]; do
@@ -690,6 +871,7 @@ case "$cmd" in
   log)        cmd_messages log "${1:-}" "${@:2}";;
   prompts)    cmd_messages prompts "${1:-}" "${@:2}";;
   resume)     cmd_resume "${1:-}";;
+  move)       cmd_move "$@";;
   files)      cmd_files "${1:-}";;
   config)     cmd_config;;
   today)      cmd_today "$@";;

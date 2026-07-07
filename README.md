@@ -13,6 +13,7 @@ It can:
 - show logs and prompts
 - show files touched in a session
 - print the command to resume a session
+- move a session to an existing OpenCode project
 - open a native OpenCode picker with `/sessions-global`
 
 The TUI plugin is intentionally thin. It calls the `sesh` CLI under the hood and shows the result inside OpenCode.
@@ -102,18 +103,19 @@ Pick a session:
 
 ### CLI
 
-| Command           | What it does                                          |
-| ----------------- | ----------------------------------------------------- |
-| `sesh list [n]`   | list recent sessions                                  |
-| `sesh search q`   | search titles, directories, prompts, and text replies |
-| `sesh show id`    | show session details                                  |
-| `sesh log id`     | show user and assistant text                          |
-| `sesh prompts id` | show user prompts only                                |
-| `sesh files id`   | list files touched in a session                       |
-| `sesh resume id`  | print `opencode -s id`                                |
-| `sesh today`      | list sessions from the last 24 hours                  |
-| `sesh stats`      | show simple database stats                            |
-| `sesh config`     | show paths and environment                            |
+| Command            | What it does                                          |
+| ------------------ | ----------------------------------------------------- |
+| `sesh list [n]`    | list recent sessions                                  |
+| `sesh search q`    | search titles, directories, prompts, and text replies |
+| `sesh show id`     | show session details                                  |
+| `sesh log id`      | show user and assistant text                          |
+| `sesh prompts id`  | show user prompts only                                |
+| `sesh files id`    | list files touched in a session                       |
+| `sesh resume id`   | print `opencode -s id`                                |
+| `sesh move id dir` | move a session to an existing OpenCode project        |
+| `sesh today`       | list sessions from the last 24 hours                  |
+| `sesh stats`       | show simple database stats                            |
+| `sesh config`      | show paths and environment                            |
 
 Examples:
 
@@ -123,6 +125,8 @@ sesh search checkout --since 7d --limit 5
 sesh search webhook --fuzzy
 sesh log ses_xxx --limit 20
 sesh resume ses_xxx
+sesh move ses_xxx /path/to/project
+sesh move ses_xxx /path/to/project --apply
 ```
 
 OpenCode subagent sessions are hidden from discovery commands by default. Add `--verbose` to include them:
@@ -139,6 +143,8 @@ sesh show ses_xxx
 sesh log ses_xxx
 ```
 
+`sesh move` is CLI-only. By default it prints the current and target project without writing anything. Add `--apply` to create a database backup and update the session.
+
 ## How it works
 
 OpenCode stores sessions in:
@@ -147,9 +153,10 @@ OpenCode stores sessions in:
 ~/.local/share/opencode/opencode.db
 ```
 
-`sesh` reads that SQLite database directly:
+`sesh` uses that SQLite database directly:
 
 - `session` has session metadata
+- `project` has OpenCode project worktrees
 - `message` has message metadata
 - `part.data` has prompt and response text rows
 
@@ -161,7 +168,7 @@ sesh list <limit> --json
 
 Then it renders those rows in an OpenCode picker.
 
-`sesh` treats the database as read-only. It does not modify OpenCode data.
+Most commands are read-only. `sesh move ... --apply` is the exception: it creates a backup next to `opencode.db`, then updates one existing `session` row to point at an existing `project` row. It uses a normal SQLite `UPDATE`; it does not alter the schema or run a migration.
 
 ## Development
 
