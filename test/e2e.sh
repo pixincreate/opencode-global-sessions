@@ -9,6 +9,7 @@ DB="$TMPDIR/opencode.db"
 SESSION_ID="ses_test1234567890"
 SUBAGENT_SESSION_ID="ses_subagent1234567"
 OLD_SESSION_ID="ses_old9876543210"
+RESUMED_SESSION_ID="ses_resumed7654321"
 WEIRD_SESSION_ID="ses_weirdquote1234"
 NO_FILE_SESSION_ID="ses_nofile1234567"
 NOW_MS=$(( $(date +%s) * 1000 ))
@@ -122,11 +123,28 @@ INSERT INTO session VALUES (
   '{"id":"quiet-model","providerID":"test-provider"}',
   'test-version',
   0,
-  1,
-  1,
+   1,
+   1,
+   0,
+   0,
+   0
+);
+INSERT INTO session VALUES (
+  '$RESUMED_SESSION_ID',
+  'proj_test',
+  '/tmp/sesh-test-project',
+  'Old session resumed today',
+  $OLD_MS,
+  $NOW_MS,
+  'test-agent',
+  '{"id":"test-model","providerID":"test-provider"}',
+  'test-version',
   0,
-  0,
-  0
+   1,
+   1,
+   0,
+   0,
+   0
 );
 INSERT INTO session VALUES (
   '$WEIRD_SESSION_ID',
@@ -164,6 +182,7 @@ INSERT INTO message VALUES (
 );
 INSERT INTO message VALUES ('msg_old_user_1', '$OLD_SESSION_ID', $OLD_MS, $OLD_MS, '{"role":"user"}');
 INSERT INTO message VALUES ('msg_quiet_user_1', '$NO_FILE_SESSION_ID', $OLDER_MS, $OLDER_MS, '{"role":"user"}');
+INSERT INTO message VALUES ('msg_resumed_user_1', '$RESUMED_SESSION_ID', $NOW_MS, $NOW_MS, '{"role":"user"}');
 INSERT INTO message VALUES ('msg_subagent_user_1', '$SUBAGENT_SESSION_ID', $((NOW_MS + 5000)), $((NOW_MS + 5000)), '{"role":"user"}');
 
 INSERT INTO part VALUES ('prt_user_1', 'msg_user_1', '$SESSION_ID', $NOW_MS, $NOW_MS, '{"type":"text","text":"write a justfile for startup"}');
@@ -255,6 +274,7 @@ assert_fails list --wat
 
 search_output="$(run search justfile --limit 1)"
 assert_contains "$search_output" "$SESSION_ID"
+assert_contains "$search_output" "updated"
 
 content_search_output="$(run search marker-final --limit 1)"
 assert_contains "$content_search_output" "$SESSION_ID"
@@ -422,19 +442,20 @@ fi
 
 today_output="$(run today)"
 assert_contains "$today_output" "$SESSION_ID"
+assert_contains "$today_output" "$RESUMED_SESSION_ID"
 assert_not_contains "$today_output" "$SUBAGENT_SESSION_ID"
-assert_not_contains "$today_output" "$OLD_SESSION_ID"
+assert_not_contains "$today_output" "$NO_FILE_SESSION_ID"
 
 today_verbose_output="$(run today --verbose)"
 assert_contains "$today_verbose_output" "$SUBAGENT_SESSION_ID"
 
 stats_output="$(run stats)"
-assert_contains "$stats_output" "Total sessions:      4"
-assert_contains "$stats_output" "Total messages:      6"
+assert_contains "$stats_output" "Total sessions:      5"
+assert_contains "$stats_output" "Total messages:      7"
 
 stats_verbose_output="$(run stats --verbose)"
-assert_contains "$stats_verbose_output" "Total sessions:      5"
-assert_contains "$stats_verbose_output" "Total messages:      7"
+assert_contains "$stats_verbose_output" "Total sessions:      6"
+assert_contains "$stats_verbose_output" "Total messages:      8"
 
 config_output="$(run config)"
 assert_contains "$config_output" "$DB"

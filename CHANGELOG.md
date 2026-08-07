@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `updated` (last-updated) column in `sesh search` and `sesh today` output
+
+### Changed
+
+- `sesh today` now lists sessions active in the last 24 hours (filtered by last update time) instead of only sessions created in that window, so resumed sessions appear
+
 ## [1.0.1] - 2026-07-08
 
 ### Added

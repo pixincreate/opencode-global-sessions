@@ -18,7 +18,7 @@ Usage:
   sesh resume <id>                  Print command to resume a session
   sesh move <id> <target-project-dir> [--dry-run|--apply]
                                       Move a session to an existing project
-  sesh today                        Sessions from the last 24 hours
+  sesh today                        Sessions active in the last 24 hours
   sesh stats                        Aggregate session statistics
   sesh files <id>                   List files touched in a session
   sesh config                       Show configuration and env
@@ -365,7 +365,7 @@ cmd_search() {
   local sql
   local session_filter
   session_filter="$(session_filter_clause s "$verbose")"
-  sql="SELECT s.id, s.directory, s.title, datetime(s.time_created/1000,'unixepoch') as created
+  sql="SELECT s.id, s.directory, s.title, datetime(s.time_created/1000,'unixepoch') as created, datetime(s.time_updated/1000,'unixepoch') as updated
 FROM session s
 WHERE (${where_clause}) AND ${session_filter}${date_condition}
 ORDER BY s.time_created DESC
@@ -715,11 +715,11 @@ cmd_today() {
   local session_filter
   session_filter="$(session_filter_clause s "$verbose")"
   sqlite3 -header -column "$DB" "
-    SELECT id, directory, title, datetime(time_created/1000,'unixepoch') as created
+    SELECT id, directory, title, datetime(time_created/1000,'unixepoch') as created, datetime(time_updated/1000,'unixepoch') as updated
     FROM session s
-    WHERE s.time_created > (strftime('%s','now') - 86400) * 1000
+    WHERE s.time_updated > (strftime('%s','now') - 86400) * 1000
       AND ${session_filter}
-    ORDER BY s.time_created DESC
+    ORDER BY s.time_updated DESC
     LIMIT 20;
   "
 }

@@ -113,7 +113,7 @@ Pick a session:
 | `sesh files id`    | list files touched in a session                       |
 | `sesh resume id`   | print `opencode -s id`                                |
 | `sesh move id dir` | move a session to an existing OpenCode project        |
-| `sesh today`       | list sessions from the last 24 hours                  |
+| `sesh today`       | list sessions active in the last 24 hours          |
 | `sesh stats`       | show simple database stats                            |
 | `sesh config`      | show paths and environment                            |
 
