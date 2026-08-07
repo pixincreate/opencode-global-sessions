@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-07
+
 ### Added
 
 - `updated` (last-updated) column in `sesh search` and `sesh today` output
