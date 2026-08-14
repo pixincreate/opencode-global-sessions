@@ -16,7 +16,7 @@
     "check": "npm run shellcheck && npm run build && npm test"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.2"
   },
   "files": [
     "dist/tui.js",
