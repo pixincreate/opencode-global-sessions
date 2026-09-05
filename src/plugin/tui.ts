@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_LIMIT = 50;
@@ -64,8 +66,21 @@ type TuiPlugin = (
   meta: unknown,
 ) => Promise<void>;
 
+// The npm package ships the sesh CLI next to dist/tui.js, so an npm install
+// works without the curl installer. SESH_BIN still overrides everything.
+const bundledSeshBin = () => {
+  try {
+    const bundled = fileURLToPath(new URL("../sesh", import.meta.url));
+    return existsSync(bundled) ? bundled : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const getSeshBin = () =>
-  process.env.SESH_BIN || `${process.env.HOME}/.local/bin/sesh`;
+  process.env.SESH_BIN ||
+  bundledSeshBin() ||
+  `${process.env.HOME}/.local/bin/sesh`;
 
 const parseLimit = (options: unknown): number => {
   if (!options || typeof options !== "object" || !("limit" in options)) {
