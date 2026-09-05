@@ -26,6 +26,34 @@ After poking around OpenCode's local database and running SQL against `~/.local`
 
 ## Installation
 
+### From npm
+
+Add the package to the `plugin` list in `~/.config/opencode/tui.jsonc`:
+
+```jsonc
+{
+  "plugin": ["opencode-global-sessions"]
+}
+```
+
+To change the picker size, pass options with the tuple form:
+
+```jsonc
+{
+  "plugin": [["opencode-global-sessions", { "limit": 100 }]]
+}
+```
+
+Restart OpenCode and run `/sessions-global`.
+OpenCode installs the package from npm on first start and caches it.
+The package bundles the `sesh` CLI, so the picker works without any other setup.
+
+A bare package name resolves to the latest version once and stays on it.
+To update, pin a version instead (for example `"opencode-global-sessions@1.0.4"`), or delete the cached copy under `~/.cache/opencode/packages/` and restart OpenCode.
+
+The npm install does not put `sesh` on your `PATH`.
+To use the CLI directly, run the installer below.
+
 ### One-line install
 
 The installer installs both parts:
