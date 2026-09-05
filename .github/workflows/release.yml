@@ -55,3 +55,29 @@ jobs:
 
             See README.md for setup.
           files: release/*.tgz
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: release
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Set up Node.js 26.4.0
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26.4.0
+          cache: npm
+
+      - name: Install npm dependencies with clean lockfile
+        run: npm ci
+
+      - name: Publish to npm via trusted publishing
+        run: npm publish
