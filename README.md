@@ -73,6 +73,9 @@ The installer installs both parts:
 - the `sesh` CLI at `~/.local/bin/sesh`
 - the plugin entry in `tui.jsonc` on v1 or `cli.json` on v2
 
+Use line comments (`//`) in installer-managed configuration.
+The installer rejects block comments (`/* ... */`) without changing your configuration.
+
 By default it uses the latest GitHub release for the CLI and the matching npm package for the plugin entry.
 It detects `opencode --version`.
 Pass `--opencode-version 1` or `--opencode-version 2` to select the host explicitly.

@@ -73,7 +73,11 @@ FROM main.session_v2;
 CREATE TEMP VIEW message AS
 SELECT id,session_id,time_created,seq AS transcript_order,
        json_set(data,'$.role',type,'$.modelID',json_extract(data,'$.model.id'),
-         '$.providerID',json_extract(data,'$.model.providerID')) AS data
+         '$.providerID',json_extract(data,'$.model.providerID'),
+         '$.tokens.total',CASE WHEN json_type(data,'$.tokens')='object' THEN
+           COALESCE(json_extract(data,'$.tokens.input'),0)+COALESCE(json_extract(data,'$.tokens.output'),0)+
+           COALESCE(json_extract(data,'$.tokens.reasoning'),0)+COALESCE(json_extract(data,'$.tokens.cache.read'),0)+
+           COALESCE(json_extract(data,'$.tokens.cache.write'),0) END) AS data
 FROM main.session_message WHERE type IN ('user','assistant');
 CREATE TEMP VIEW part AS
 SELECT id || ':text' AS id,id AS message_id,session_id,0 AS part_order,
@@ -102,7 +106,11 @@ SELECT id,project_id,parent_id,directory,title,version,agent,model,cost,tokens_i
 CREATE TEMP VIEW message AS
 SELECT id,session_id,time_created,seq AS transcript_order,
        json_set(data,'$.role',type,'$.modelID',json_extract(data,'$.model.id'),
-         '$.providerID',json_extract(data,'$.model.providerID')) AS data
+         '$.providerID',json_extract(data,'$.model.providerID'),
+         '$.tokens.total',CASE WHEN json_type(data,'$.tokens')='object' THEN
+           COALESCE(json_extract(data,'$.tokens.input'),0)+COALESCE(json_extract(data,'$.tokens.output'),0)+
+           COALESCE(json_extract(data,'$.tokens.reasoning'),0)+COALESCE(json_extract(data,'$.tokens.cache.read'),0)+
+           COALESCE(json_extract(data,'$.tokens.cache.write'),0) END) AS data
 FROM main.session_message WHERE type IN ('user','assistant')
 UNION ALL
 SELECT m.id,m.session_id,m.time_created,m.time_created,m.data FROM main.message m
@@ -205,7 +213,11 @@ session_filter_clause() {
   if (( verbose )); then
     echo "1=1"
   else
-    echo "COALESCE(${alias}.title, '') NOT LIKE '%(@% subagent)%'"
+    local native_filter=""
+    if [[ "$HAS_V2" == 2 ]]; then
+      native_filter="AND (${alias}.parent_id IS NULL OR NOT EXISTS (SELECT 1 FROM main.session_v2 native WHERE native.id=${alias}.id))"
+    fi
+    echo "COALESCE(${alias}.title, '') NOT LIKE '%(@% subagent)%' ${native_filter}"
   fi
 }
 

@@ -476,10 +476,22 @@ INSERT INTO session_message VALUES
 ('msg_v2_user','$SESSION_ID','user',2,$NOW_MS,$NOW_MS,'{"text":"v2 prompt with apostrophe: it''s valid","files":[],"agents":[],"skills":[],"time":{"created":$NOW_MS}}'),
 ('msg_v2_assistant','$SESSION_ID','assistant',3,$NOW_MS,$NOW_MS,'{"model":{"id":"test-model","providerID":"test-provider"},"agent":"build","time":{"created":$NOW_MS},"content":[{"type":"reasoning","text":"hidden-reasoning"},{"type":"text","text":"first-visible"},{"type":"tool","name":"shell","id":"tool1","state":{"status":"completed","input":{},"content":[{"type":"text","text":"hidden-tool-output"}]}},{"type":"text","text":"second-visible"}],"snapshot":{"files":["src/a.ts","src/b.ts"]},"finish":"stop"}');
 SQL
+sqlite3 "$DB" <<SQL
+UPDATE session_message SET data=json_set(data,'$.tokens',json('{"input":10,"output":20,"reasoning":3,"cache":{"read":4,"write":5}}')) WHERE id='msg_v2_assistant';
+INSERT INTO session_v2 SELECT * FROM session_v2 WHERE id='$SESSION_ID';
+UPDATE session_v2 SET id='ses_v2_child',parent_id='$SESSION_ID',title='Investigate child logs',time_created=time_created+100,time_updated=time_updated+100 WHERE rowid=last_insert_rowid();
+SQL
 v2_before="$(sqlite3 "$DB" .dump)"
 v2_list="$(run list --json)"
 assert_contains "$v2_list" '"message_count":2'
 assert_contains "$v2_list" 'V2 authoritative session'
+assert_not_contains "$v2_list" 'ses_v2_child'
+assert_contains "$(run list --verbose --json)" 'ses_v2_child'
+assert_contains "$(run list 1 --json)" "$SESSION_ID"
+assert_not_contains "$(run search Investigate --json)" 'ses_v2_child'
+assert_contains "$(run search Investigate --verbose --json)" 'ses_v2_child'
+assert_not_contains "$(run today)" 'ses_v2_child'
+assert_contains "$(run stats)" 'Total sessions:      1'
 assert_contains "$(run search "it's valid" --json)" "$SESSION_ID"
 assert_contains "$(run prompts "$SESSION_ID")" "it's valid"
 v2_log="$(run log "$SESSION_ID")"
@@ -487,6 +499,11 @@ v2_log="$(run log "$SESSION_ID")"
 assert_not_contains "$v2_log" "hidden-reasoning"
 assert_not_contains "$v2_log" "hidden-tool-output"
 assert_contains "$(run show "$SESSION_ID")" "2 total (1 user, 1 assistant)"
+assert_contains "$(run show "$SESSION_ID")" "tokens: 42"
+sqlite3 "$DB" "UPDATE session_message SET data=json_remove(data,'\$.tokens') WHERE id='msg_v2_assistant';"
+assert_contains "$(run show "$SESSION_ID")" "tokens: ?"
+sqlite3 "$DB" "UPDATE session_message SET data=json_set(data,'\$.tokens',json('{\"input\":10,\"output\":20,\"reasoning\":3,\"cache\":{\"read\":4,\"write\":5}}')) WHERE id='msg_v2_assistant';"
+v2_before="$(sqlite3 "$DB" .dump)"
 assert_contains "$(run files "$SESSION_ID")" "src/b.ts"
 assert_contains "$(run today)" "$SESSION_ID"
 assert_contains "$(run stats)" "Total messages:      2"
@@ -527,6 +544,9 @@ mixed_list="$(run list --json)"
 assert_contains "$mixed_list" 'V2 authoritative session'
 assert_not_contains "$mixed_list" 'Test session with justfile'
 assert_contains "$mixed_list" "$OLD_SESSION_ID"
+assert_not_contains "$mixed_list" 'ses_v2_child'
+assert_contains "$(run list --verbose --json)" 'ses_v2_child'
+assert_contains "$(run show "$SESSION_ID")" 'tokens: 42'
 assert_not_contains "$(run log "$SESSION_ID")" "marker-final"
 assert_contains "$(run log "$OLD_SESSION_ID")" "legacy deployment notes"
 assert_fails move "$OLD_SESSION_ID" /tmp/sesh-test-project --apply
@@ -573,7 +593,7 @@ assert_not_contains "$installer_config_after_uninstall" "opencode-global-session
 for major in 1 2; do
   key="plugin"
   [[ "$major" == 2 ]] && key="plugins"
-  printf '{"%s": ["other-plugin"], "theme": "test"}\n' "$key" >"$installer_config"
+  printf '{\n // "%s": ["example-plugin"],\n "%s": ["other-plugin"], "theme": "test"\n}\n' "$key" "$key" >"$installer_config"
   for _iteration in 1 2; do
     SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
       SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
@@ -595,6 +615,31 @@ import { readFileSync } from "node:fs";
 const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
 assert.deepEqual(config, { [process.env.KEY]: ["other-plugin"], theme: "test" });
 JS
+  printf '{\n  // "%s": ["example-plugin"],\n  "theme": "test"\n}\n' "$key" >"$installer_config"
+  for _iteration in 1 2; do
+    SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+      SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+      SESH_INSTALL_PLUGIN_SPEC="opencode-global-sessions@2.0.0" \
+      "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >/dev/null
+  done
+  CONFIG="$installer_config" KEY="$key" node --input-type=module <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
+assert.equal(config[process.env.KEY].length, 1);
+assert.equal(config.theme, "test");
+JS
+  SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+    SESH_INSTALL_STATE_DIR="$installer_home/state" "$ROOT/scripts/install.sh" --opencode-version "$major" --uninstall >/dev/null
+  printf '{\n /* example\n "%s": []\n */\n "theme": "test"\n}\n' "$key" >"$installer_config"
+  cp "$installer_config" "$TMPDIR/comment-config-original"
+  if SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+    SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+    "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >"$TMPDIR/block-comment.out" 2>"$TMPDIR/block-comment.err"; then
+    printf 'Expected block-comment config to fail safely\n' >&2; exit 1
+  fi
+  assert_contains "$(<"$TMPDIR/block-comment.err")" 'Remove block comments'
+  cmp "$installer_config" "$TMPDIR/comment-config-original"
 done
 
 fake_repo="$TMPDIR/fake-repo"

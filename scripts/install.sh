@@ -162,9 +162,15 @@ EOF
     return
   fi
 
-  if ! grep -Eq "\"${config_key}\"[[:space:]]*:[[:space:]]*\[" "$config_file" &&
+  local array_pattern="^[[:space:]]*(\\{[[:space:]]*)?\"${config_key}\"[[:space:]]*:[[:space:]]*\\["
+  # Do not edit block-comment layouts with the line-oriented writer.
+  if grep -Fq '/*' "$config_file"; then
+    echo "Error: unsupported config layout. Remove block comments before running the installer." >&2
+    return 1
+  fi
+  if ! grep -Eq "$array_pattern" "$config_file" &&
      ! grep -Eq '^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$' "$config_file"; then
-    if grep -Eq "\"${config_key}\"[[:space:]]*:" "$config_file" ||
+    if awk -v key="$config_key" '!/^[[:space:]]*\/\// && $0 ~ "\"" key "\"[[:space:]]*:" { found=1 } END { exit !found }' "$config_file" ||
        ! grep -Eq '^[[:space:]]*\{[[:space:]]*$' "$config_file"; then
       echo "Error: unsupported config layout. Add a ${config_key} array before running the installer." >&2
       return 1
@@ -175,9 +181,9 @@ EOF
   block_file="$(mktemp)"
   plugin_block "$spec" >"$block_file"
 
-  if grep -Eq "\"${config_key}\"[[:space:]]*:[[:space:]]*\[" "$config_file"; then
+  if grep -Eq "$array_pattern" "$config_file"; then
     awk -v block_file="$block_file" -v key="$config_key" '
-      inserted == 0 && $0 ~ "\"" key "\"[[:space:]]*:[[:space:]]*\\[" {
+      inserted == 0 && $0 ~ "^[[:space:]]*(\\{[[:space:]]*)?\"" key "\"[[:space:]]*:[[:space:]]*\\[" {
         match($0, "\"" key "\"[[:space:]]*:[[:space:]]*\\[")
         boundary = RSTART + RLENGTH - 1
         print substr($0, 1, boundary)
