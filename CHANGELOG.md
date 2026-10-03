@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Restore OpenCode v1 support alongside v2 through separate TUI entrypoints.
+- Read v1, v2, and mixed session databases, with v2 taking precedence for migrated sessions.
+- Add installer host detection and `--opencode-version 1|2`.
+
+### Fixed
+
+- Preserve existing inline plugin arrays during installation and reinstallation.
+- Reject session moves in v2 and mixed databases before backup or mutation.
+
+## [2.0.0] - 2026-09-21
+
+### Changed
+
+- Rewrote the TUI plugin against the OpenCode v2 plugin API: `Plugin.define` with a `setup` function, `ui.slot`, `keymap.layer`, `ui.dialog.select`, and `ui.router.navigate`
+- Installer writes the plugin entry to `~/.config/opencode/cli.json` under `plugins`, using the `{ "package": ..., "options": ... }` form
+- Clone installs register the local `dist` directory instead of a `dist/tui.js` file path
+
+### Removed
+
+- OpenCode v1 support. On OpenCode v1, install version 1.x of this package.
+
 ## [1.0.3] - 2026-08-07
 
 ### Added

@@ -28,19 +28,31 @@ After poking around OpenCode's local database and running SQL against `~/.local`
 
 ### From npm
 
-Add the package to the `plugin` list in `~/.config/opencode/tui.jsonc`:
+Use this package on OpenCode v1 and v2.
+
+On v2, add the package to `plugins` in `~/.config/opencode/cli.json`:
 
 ```jsonc
 {
-  "plugin": ["opencode-global-sessions"]
+  "plugins": ["opencode-global-sessions"]
 }
 ```
 
-To change the picker size, pass options with the tuple form:
+On v1, add it to `plugin` in `~/.config/opencode/tui.jsonc`:
+
+```json
+{
+  "plugin": [["opencode-global-sessions", { "limit": 100 }]]
+}
+```
+
+To change the picker size, pass options:
 
 ```jsonc
 {
-  "plugin": [["opencode-global-sessions", { "limit": 100 }]]
+  "plugins": [
+    { "package": "opencode-global-sessions", "options": { "limit": 100 } }
+  ]
 }
 ```
 
@@ -49,7 +61,7 @@ OpenCode installs the package from npm on first start and caches it.
 The package bundles the `sesh` CLI, so the picker works without any other setup.
 
 A bare package name resolves to the latest version once and stays on it.
-To update, pin a version instead (for example `"opencode-global-sessions@1.0.4"`), or delete the cached copy under `~/.cache/opencode/packages/` and restart OpenCode.
+To update, pin the package version you want and restart OpenCode.
 
 The npm install does not put `sesh` on your `PATH`.
 To use the CLI directly, run the installer below.
@@ -59,9 +71,11 @@ To use the CLI directly, run the installer below.
 The installer installs both parts:
 
 - the `sesh` CLI at `~/.local/bin/sesh`
-- the OpenCode TUI plugin entry in `~/.config/opencode/tui.jsonc`
+- the plugin entry in `tui.jsonc` on v1 or `cli.json` on v2
 
-By default it uses the latest GitHub release: the CLI is downloaded from that release tag, and the plugin entry points OpenCode at the release tarball.
+By default it uses the latest GitHub release for the CLI and the matching npm package for the plugin entry.
+It detects `opencode --version`.
+Pass `--opencode-version 1` or `--opencode-version 2` to select the host explicitly.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash
@@ -87,7 +101,9 @@ curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-session
 
 ### Development install
 
-Use clone mode when working on the plugin locally. It clones the repo, builds the plugin, symlinks the CLI to `~/.local/bin/sesh`, and points OpenCode at the local `dist/tui.js`.
+Use clone mode when working on the plugin locally.
+It clones the repo, builds the plugin, and symlinks the CLI to `~/.local/bin/sesh`.
+V1 loads `dist/tui.js`; v2 loads the `dist` directory.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --clone
@@ -107,7 +123,9 @@ Run the installer in uninstall mode:
 curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --uninstall
 ```
 
-This removes `~/.local/bin/sesh` and the installer-managed OpenCode plugin entry. If you set this env var manually, remove it from your shell config too:
+This removes `~/.local/bin/sesh` and the managed entry from the selected host's configuration.
+Use the same `--opencode-version` value you used to install.
+If you set this env var manually, remove it from your shell config too:
 
 ```bash
 SESH_BIN
@@ -172,6 +190,9 @@ sesh log ses_xxx
 ```
 
 `sesh move` is CLI-only. By default it prints the current and target project without writing anything. Add `--apply` to create a database backup and update the session.
+Moves are supported only for v1-only databases.
+V2 and mixed databases reject moves, including dry runs, because direct SQL updates bypass OpenCode's session events and workspace state.
+Use OpenCode to move those sessions.
 
 ## How it works
 
@@ -183,10 +204,17 @@ OpenCode stores sessions in:
 
 `sesh` uses that SQLite database directly:
 
-- `session` has session metadata
+- v1 `session` has session metadata
 - `project` has OpenCode project worktrees
 - `message` has message metadata
 - `part.data` has prompt and response text rows
+- v2 uses `session_v2` and inline text in `session_message`
+
+Reads use temporary projections without changing the stored schema.
+V2 takes precedence when both schemas contain the same session ID.
+Legacy-only sessions remain readable.
+Set `OPENCODE_DB` to override the database path.
+The default respects `XDG_DATA_HOME`.
 
 The CLI reads the database. The OpenCode TUI plugin calls:
 
@@ -196,7 +224,9 @@ sesh list <limit> --json
 
 Then it renders those rows in an OpenCode picker.
 
-Most commands are read-only. `sesh move ... --apply` is the exception: it creates a backup next to `opencode.db`, then updates one existing `session` row to point at an existing `project` row. It uses a normal SQLite `UPDATE`; it does not alter the schema or run a migration.
+Read commands enable SQLite query-only mode.
+On v1-only databases, `sesh move ... --apply` creates a backup next to `opencode.db`, then updates one existing `session` row to point at an existing `project` row.
+It does not alter the schema or run a migration.
 
 ## Development
 
@@ -206,7 +236,7 @@ Run the full local check:
 npm run check
 ```
 
-That runs ShellCheck, builds the TUI plugin, and runs E2E tests against a temporary SQLite database.
+That runs ShellCheck, typechecks and builds the TUI plugin, and runs E2E tests against temporary v1, v2, and mixed SQLite databases.
 
 Create a release:
 

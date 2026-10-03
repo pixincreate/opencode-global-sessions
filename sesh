@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-DB="${OPENCODE_DB:-${HOME}/.local/share/opencode/opencode.db}"
+DB="${OPENCODE_DB:-${XDG_DATA_HOME:-${HOME}/.local/share}/opencode/opencode.db}"
 
 
 usage() {
@@ -60,6 +60,93 @@ if [[ ! -f "$DB" ]]; then
   exit 1
 fi
 
+# Build connection-local, read-only projections. Never modify the host schema.
+HAS_V2=$(sqlite3 "$DB" "PRAGMA query_only=ON; SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('session_v2','session_message');")
+HAS_V1=$(sqlite3 "$DB" "PRAGMA query_only=ON; SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('session','message','part');")
+READ_SCHEMA=""
+if [[ "$HAS_V2" == 2 ]]; then
+  READ_SCHEMA=$(cat <<'SQL'
+CREATE TEMP VIEW session AS
+SELECT id,project_id,parent_id,directory,title,version,agent,model,cost,tokens_input,tokens_output,
+       tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated
+FROM main.session_v2;
+CREATE TEMP VIEW message AS
+SELECT id,session_id,time_created,seq AS transcript_order,
+       json_set(data,'$.role',type,'$.modelID',json_extract(data,'$.model.id'),
+         '$.providerID',json_extract(data,'$.model.providerID')) AS data
+FROM main.session_message WHERE type IN ('user','assistant');
+CREATE TEMP VIEW part AS
+SELECT id || ':text' AS id,id AS message_id,session_id,0 AS part_order,
+       json_object('type','text','text',json_extract(data,'$.text')) AS data
+FROM main.session_message WHERE type='user'
+UNION ALL
+SELECT m.id || ':text:' || c.key,m.id,m.session_id,CAST(c.key AS INTEGER),c.value
+FROM main.session_message m,json_each(m.data,'$.content') c
+WHERE m.type='assistant' AND json_extract(c.value,'$.type')='text';
+CREATE TEMP VIEW session_file AS
+SELECT m.session_id,f.value AS file
+FROM main.session_message m,json_each(m.data,'$.snapshot.files') f WHERE m.type='assistant';
+SQL
+)
+  if [[ "$HAS_V1" == 3 ]]; then
+    # The v2 migration retains legacy rows. Include only sessions not migrated yet.
+    READ_SCHEMA=$(cat <<'SQL'
+CREATE TEMP VIEW selected_legacy AS SELECT * FROM main.session s
+WHERE NOT EXISTS (SELECT 1 FROM main.session_v2 v WHERE v.id=s.id);
+CREATE TEMP VIEW session AS
+SELECT id,project_id,parent_id,directory,title,version,agent,model,cost,tokens_input,tokens_output,
+       tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated FROM main.session_v2
+UNION ALL
+SELECT id,project_id,parent_id,directory,title,version,agent,model,cost,tokens_input,tokens_output,
+       tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated FROM selected_legacy;
+CREATE TEMP VIEW message AS
+SELECT id,session_id,time_created,seq AS transcript_order,
+       json_set(data,'$.role',type,'$.modelID',json_extract(data,'$.model.id'),
+         '$.providerID',json_extract(data,'$.model.providerID')) AS data
+FROM main.session_message WHERE type IN ('user','assistant')
+UNION ALL
+SELECT m.id,m.session_id,m.time_created,m.time_created,m.data FROM main.message m
+JOIN selected_legacy s ON s.id=m.session_id;
+CREATE TEMP VIEW part AS
+SELECT id || ':text' AS id,id AS message_id,session_id,0 AS part_order,
+       json_object('type','text','text',json_extract(data,'$.text')) AS data
+FROM main.session_message WHERE type='user'
+UNION ALL
+SELECT m.id || ':text:' || c.key,m.id,m.session_id,CAST(c.key AS INTEGER),c.value
+FROM main.session_message m,json_each(m.data,'$.content') c
+WHERE m.type='assistant' AND json_extract(c.value,'$.type')='text'
+UNION ALL
+SELECT p.id,p.message_id,p.session_id,p.rowid,p.data FROM main.part p JOIN selected_legacy s ON s.id=p.session_id;
+CREATE TEMP VIEW session_file AS
+SELECT m.session_id,f.value AS file FROM main.session_message m,json_each(m.data,'$.snapshot.files') f
+WHERE m.type='assistant'
+UNION ALL
+SELECT m.session_id,json_extract(f.value,'$.file') FROM main.message m
+JOIN selected_legacy s ON s.id=m.session_id,json_each(m.data,'$.summary.diffs') f;
+SQL
+)
+  fi
+elif [[ "$HAS_V1" == 3 ]]; then
+  READ_SCHEMA=$(cat <<'SQL'
+CREATE TEMP VIEW message AS SELECT *,time_created AS transcript_order FROM main.message;
+CREATE TEMP VIEW part AS SELECT *,rowid AS part_order FROM main.part;
+CREATE TEMP VIEW session_file AS
+SELECT m.session_id,json_extract(f.value,'$.file') AS file FROM main.message m,json_each(m.data,'$.summary.diffs') f;
+SQL
+)
+else
+  echo "Error: unsupported OpenCode schema at $DB" >&2
+  exit 1
+fi
+
+read_db() {
+  local sql="${!#}"
+  set -- "${@:1:$(($#-1))}"
+  # Some SQLite builds cannot reopen a WAL database with -readonly after its
+  # shared-memory file is removed. query_only protects all reads without losing WAL data.
+  sqlite3 "$@" "$DB" "${READ_SCHEMA} PRAGMA query_only=ON; ${sql}"
+}
+
 escape_sql() {
   printf '%s' "$1" | sed "s/'/''/g"
 }
@@ -105,7 +192,7 @@ ensure_project_worktree_column() {
 ensure_session_exists() {
   local sid="$1"
   local exists
-  exists=$(sqlite3 "$DB" "SELECT count(*) FROM session WHERE id = '${sid}';" 2>/dev/null)
+   exists=$(read_db "SELECT count(*) FROM session WHERE id = '${sid}';" 2>/dev/null)
   if [[ "$exists" -eq 0 ]]; then
     echo "Error: session not found: ${sid}" >&2
     exit 1
@@ -118,7 +205,7 @@ session_filter_clause() {
   if (( verbose )); then
     echo "1=1"
   else
-    echo "${alias}.title NOT LIKE '%(@% subagent)%'"
+    echo "COALESCE(${alias}.title, '') NOT LIKE '%(@% subagent)%'"
   fi
 }
 
@@ -235,9 +322,9 @@ cmd_list() {
   "
 
   if (( json_output )); then
-    sqlite3 -json "$DB" "$sql"
+    read_db -json "$sql"
   else
-    sqlite3 -header -column "$DB" "$sql"
+    read_db -header -column "$sql"
   fi
 }
 
@@ -372,9 +459,9 @@ ORDER BY s.time_created DESC
 LIMIT $limit;"
 
   if (( json_output )); then
-    sqlite3 -json "$DB" "$sql"
+    read_db -json "$sql"
   else
-    sqlite3 -header -column "$DB" "$sql"
+    read_db -header -column "$sql"
   fi
 }
 
@@ -389,7 +476,7 @@ cmd_show() {
 
   echo "Session details"
 
-  sqlite3 -separator $'\n' "$DB" "
+  read_db -separator $'\n' "
     SELECT 'ID:        ' || s.id,
            'Title:     ' || s.title,
            'Directory: ' || s.directory,
@@ -408,21 +495,21 @@ cmd_show() {
   " 2>/dev/null
 
   local msg_count
-  msg_count=$(sqlite3 "$DB" "SELECT count(*) FROM message WHERE session_id = '${sid}';" 2>/dev/null)
+  msg_count=$(read_db "SELECT count(*) FROM message WHERE session_id = '${sid}';" 2>/dev/null)
   local user_msgs
-  user_msgs=$(sqlite3 "$DB" "SELECT count(*) FROM message WHERE session_id = '${sid}' AND json_extract(data,'$.role')='user';" 2>/dev/null)
+  user_msgs=$(read_db "SELECT count(*) FROM message WHERE session_id = '${sid}' AND json_extract(data,'$.role')='user';" 2>/dev/null)
   local assistant_msgs
-  assistant_msgs=$(sqlite3 "$DB" "SELECT count(*) FROM message WHERE session_id = '${sid}' AND json_extract(data,'$.role')='assistant';" 2>/dev/null)
+  assistant_msgs=$(read_db "SELECT count(*) FROM message WHERE session_id = '${sid}' AND json_extract(data,'$.role')='assistant';" 2>/dev/null)
 
   echo "Messages:    $msg_count total ($user_msgs user, $assistant_msgs assistant)"
 
   echo ""
   echo "Messages"
-  sqlite3 -separator $'\n' "$DB" "
+  read_db -separator $'\n' "
     WITH text_parts AS (
       SELECT message_id,
              replace(group_concat(json_extract(data, '$.text'), ' '), char(10), ' ') AS text
-      FROM part
+      FROM (SELECT * FROM part ORDER BY part_order)
       WHERE session_id = '${sid}' AND json_extract(data, '$.type') = 'text'
       GROUP BY message_id
     )
@@ -442,25 +529,19 @@ cmd_show() {
     FROM message m
     LEFT JOIN text_parts tp ON tp.message_id = m.id
     WHERE m.session_id = '${sid}'
-    ORDER BY m.time_created ASC;
+    ORDER BY m.transcript_order ASC;
   " 2>/dev/null
 
   echo ""
   echo "Files changed"
   local file_count
-  file_count=$(sqlite3 "$DB" "
-    SELECT count(DISTINCT json_extract(data, '$.summary.diffs[0].file'))
-    FROM message
-    WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL;
+  file_count=$(read_db "
+    SELECT count(DISTINCT file) FROM session_file WHERE session_id = '${sid}';
   " 2>/dev/null)
 
   if [[ "$file_count" -gt 0 ]]; then
-    sqlite3 -separator $'\n' "$DB" "
-      SELECT '- ' || json_extract(data, '$.summary.diffs[0].file')
-      FROM message
-      WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL
-      GROUP BY json_extract(data, '$.summary.diffs[0].file')
-      ORDER BY json_extract(data, '$.summary.diffs[0].file');
+    read_db -separator $'\n' "
+      SELECT DISTINCT '- ' || file FROM session_file WHERE session_id = '${sid}' ORDER BY file;
     " 2>/dev/null
   else
     echo "(none)"
@@ -521,11 +602,11 @@ cmd_messages() {
   local text_expr
   text_expr="replace(COALESCE(tp.text, ''), char(10), '\\n')"
 
-  sqlite3 -separator $'\t' "$DB" "
+  read_db -separator $'\t' "
     WITH text_parts AS (
       SELECT message_id,
              group_concat(json_extract(data, '$.text'), char(10) || char(10)) AS text
-      FROM part
+      FROM (SELECT * FROM part ORDER BY part_order)
       WHERE session_id = '${sid}' AND json_extract(data, '$.type') = 'text'
       GROUP BY message_id
     )
@@ -536,7 +617,7 @@ cmd_messages() {
     LEFT JOIN text_parts tp ON tp.message_id = m.id
     WHERE m.session_id = '${sid}' ${role_filter}
       AND COALESCE(tp.text, '') <> ''
-    ORDER BY m.time_created ASC
+    ORDER BY m.transcript_order ASC
     LIMIT $limit;
   " 2>/dev/null | while IFS=$'\t' read -r role created text; do
     if [[ -n "$text" ]]; then
@@ -560,6 +641,10 @@ cmd_resume() {
 }
 
 cmd_move() {
+  if [[ "$HAS_V2" == 2 ]]; then
+    echo "Error: move is not supported for v2 or mixed OpenCode databases. Move sessions through OpenCode instead." >&2
+    exit 1
+  fi
   local apply=0
   local dry_run=0
   local positionals=()
@@ -714,7 +799,7 @@ cmd_today() {
 
   local session_filter
   session_filter="$(session_filter_clause s "$verbose")"
-  sqlite3 -header -column "$DB" "
+  read_db -header -column "
     SELECT id, directory, title, datetime(time_created/1000,'unixepoch') as created, datetime(time_updated/1000,'unixepoch') as updated
     FROM session s
     WHERE s.time_updated > (strftime('%s','now') - 86400) * 1000
@@ -745,7 +830,7 @@ cmd_stats() {
 
   echo "Session statistics"
 
-  sqlite3 -separator $'\n' "$DB" "
+  read_db -separator $'\n' "
     WITH filtered_sessions AS (
       SELECT * FROM session s WHERE ${session_filter}
     )
@@ -762,7 +847,7 @@ cmd_stats() {
 
   echo ""
   echo "Date range"
-  sqlite3 -separator $'\n' "$DB" "
+  read_db -separator $'\n' "
     WITH filtered_sessions AS (
       SELECT * FROM session s WHERE ${session_filter}
     )
@@ -773,7 +858,7 @@ cmd_stats() {
 
   echo ""
   echo "Top directories"
-  sqlite3 -separator $'\n' "$DB" "
+  read_db -separator $'\n' "
     SELECT '  ' || printf('%3d', cnt) || ' ' || dir || ''
     FROM (
       SELECT directory as dir, count(*) as cnt
@@ -787,7 +872,7 @@ cmd_stats() {
 
   echo ""
   echo "Token usage (all time)"
-  sqlite3 -separator $'\n' "$DB" "
+  read_db -separator $'\n' "
     SELECT 'Total cost:       ' || printf('%.4f', COALESCE(SUM(cost), 0))
     FROM session s WHERE ${session_filter}
     UNION ALL
@@ -812,20 +897,15 @@ cmd_files() {
   ensure_session_exists "$sid"
 
   local file_count
-  file_count=$(sqlite3 "$DB" "
-    SELECT count(DISTINCT json_extract(data, '$.summary.diffs[0].file'))
-    FROM message
-    WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL;
+  file_count=$(read_db "
+    SELECT count(DISTINCT file) FROM session_file WHERE session_id = '${sid}';
   " 2>/dev/null)
 
   if [[ "$file_count" -gt 0 ]]; then
     echo "Files touched in ${sid}:"
     echo ""
-    sqlite3 -separator $'\n' "$DB" "
-      SELECT DISTINCT json_extract(data, '$.summary.diffs[0].file')
-      FROM message
-      WHERE session_id = '${sid}' AND json_extract(data, '$.summary.diffs[0]') IS NOT NULL
-      ORDER BY json_extract(data, '$.summary.diffs[0].file');
+    read_db -separator $'\n' "
+      SELECT DISTINCT file FROM session_file WHERE session_id = '${sid}' ORDER BY file;
     " 2>/dev/null | while IFS= read -r f; do
       if [[ -n "$f" ]]; then
         echo "- $f"
