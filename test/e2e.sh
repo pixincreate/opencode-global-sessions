@@ -550,7 +550,14 @@ assert_contains "$(run show "$SESSION_ID")" 'tokens: 42'
 assert_not_contains "$(run log "$SESSION_ID")" "marker-final"
 assert_contains "$(run log "$OLD_SESSION_ID")" "legacy deployment notes"
 assert_fails move "$OLD_SESSION_ID" /tmp/sesh-test-project --apply
+sqlite3 "$DB" "UPDATE session SET time_created=9999999999999 WHERE id='$OLD_SESSION_ID';"
+assert_contains "$(run list 1 --json)" "$OLD_SESSION_ID"
+native_list="$(run list 1 --json --native-v2)"
+assert_contains "$native_list" 'ses_v2_empty'
+assert_not_contains "$native_list" "$OLD_SESSION_ID"
+assert_not_contains "$(run list 100 --json --native-v2)" "$OLD_SESSION_ID"
 DB="$legacy_db"
+assert_fails list --json --native-v2
 
 if OPENCODE_DB="$TMPDIR/missing.db" "$ROOT/sesh" list >"$TMPDIR/missing-db.out" 2>"$TMPDIR/missing-db.err"; then
   printf 'Expected missing database command to fail\n' >&2
@@ -687,7 +694,7 @@ printf '#!/bin/sh\nprintf "fixture database unavailable\\n" >&2\nexit 1\n' >"$TM
 chmod +x "$TMPDIR/empty-sesh" "$TMPDIR/invalid-sesh" "$TMPDIR/failing-sesh"
 tui_output="$(
   cd "$ROOT"
-  OPENCODE_DB="$DB" SESH_BIN="$ROOT/sesh" SESH_TEST_EMPTY_BIN="$TMPDIR/empty-sesh" SESH_TEST_INVALID_BIN="$TMPDIR/invalid-sesh" SESH_TEST_FAIL_BIN="$TMPDIR/failing-sesh" node --input-type=module <<'JS'
+  OPENCODE_DB="$DB" SESH_TEST_NATIVE_DB="$TMPDIR/v2.db" SESH_BIN="$ROOT/sesh" SESH_TEST_EMPTY_BIN="$TMPDIR/empty-sesh" SESH_TEST_INVALID_BIN="$TMPDIR/invalid-sesh" SESH_TEST_FAIL_BIN="$TMPDIR/failing-sesh" node --input-type=module <<'JS'
 const mod = await import("./dist/tui.js")
 const plugin = mod.default
 const assert = (condition, message) => {
@@ -746,11 +753,13 @@ slotClaim.render({})
 const layer = layers[0]
 const command = layer.commands[0]
 
+const legacyDB = process.env.OPENCODE_DB
+process.env.OPENCODE_DB = process.env.SESH_TEST_NATIVE_DB
 await command.run()
 assert(selected.options.length === 1, "picker should show one fixture session")
-assert(selected.options[0].value.id === "ses_test1234567890", "picker option should contain session id")
+assert(selected.options[0].value.id === "ses_v2_empty", "v2 picker must offer native sessions before applying its limit")
 assert(navigated.type === "session", "selecting should navigate to the session route")
-assert(navigated.sessionID === "ses_test1234567890", "selecting should pass sessionID")
+assert(navigated.sessionID === "ses_v2_empty", "selecting should pass native sessionID")
 
 navigated = undefined
 context.ui.dialog.select = () => { dialogOpened = true; return Promise.resolve(undefined) }
@@ -758,6 +767,7 @@ await command.run()
 assert(navigated === undefined, "cancelling must not navigate")
 
 let legacyCommand
+process.env.OPENCODE_DB = legacyDB
 let legacyDestination
 let cancelLegacy = false
 const api = {

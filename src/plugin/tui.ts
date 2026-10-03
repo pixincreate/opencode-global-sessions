@@ -59,10 +59,10 @@ export const parseSessionRows = (text: string): SessionRow[] => {
   });
 };
 
-const loadSessions = async (limit: number): Promise<SessionRow[]> => {
+const loadSessions = async (limit: number, nativeV2: boolean): Promise<SessionRow[]> => {
   const { stdout } = await execFileAsync(
     getSeshBin(),
-    ["list", String(limit), "--json"],
+    ["list", String(limit), "--json", ...(nativeV2 ? ["--native-v2"] : [])],
     { encoding: "utf8" },
   );
 
@@ -118,9 +118,10 @@ export interface PickerHost {
 export const openRecentSessions = async (
   host: PickerHost,
   limit: number,
+  nativeV2 = false,
 ): Promise<void> => {
   try {
-    const sessions = await loadSessions(limit);
+    const sessions = await loadSessions(limit, nativeV2);
 
     if (sessions.length === 0) {
       host.toast({
@@ -195,7 +196,7 @@ export default {
               group: "Sessions",
               palette: true,
               slash: { name: "sessions-global" },
-              run: () => openRecentSessions(v2Picker(context), limit),
+              run: () => openRecentSessions(v2Picker(context), limit, true),
             },
           ],
           bindings: ["sesh.sessions.recent"],

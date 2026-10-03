@@ -9,7 +9,7 @@ usage() {
 sesh - Global session search for OpenCode
 
 Usage:
-  sesh list [n] [--json] [--verbose]
+  sesh list [n] [--json] [--verbose] [--native-v2]
                                       List n recent sessions (default: 10)
   sesh search <query> [options]     Search sessions globally by title/directory/message
   sesh show <id>                    Show full session details
@@ -290,11 +290,13 @@ cmd_list() {
   local limit=10
   local json_output=0
   local verbose=0
+  local native_v2=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) json_output=1; shift;;
       --verbose) verbose=1; shift;;
+      --native-v2) native_v2=1; shift;;
       -h|--help) usage; exit 0;;
       -*)
         echo "Error: Unknown option: $1" >&2
@@ -320,14 +322,29 @@ cmd_list() {
   local sql
   local session_filter
   session_filter="$(session_filter_clause s "$verbose")"
+  local inventory=session
+  local message_count="(SELECT count(*) FROM main.message m WHERE m.session_id = s.id)"
+  if [[ "$HAS_V2" == 2 ]]; then
+    message_count="(SELECT count(*) FROM main.session_message m WHERE m.session_id=s.id AND m.type IN ('user','assistant'))"
+    if [[ "$HAS_V1" == 3 ]]; then
+      message_count="CASE WHEN EXISTS (SELECT 1 FROM main.session_v2 v WHERE v.id=s.id) THEN $message_count ELSE (SELECT count(*) FROM main.message m WHERE m.session_id=s.id) END"
+    fi
+  fi
+  if (( native_v2 )); then
+    if [[ "$HAS_V2" != 2 ]]; then
+      printf 'Error: native v2 sessions are unavailable in this database\n' >&2
+      exit 1
+    fi
+    inventory=main.session_v2
+  fi
   sql="
     SELECT s.id,
            s.directory,
            s.title,
            datetime(s.time_created/1000,'unixepoch') as created,
            datetime(s.time_updated/1000,'unixepoch') as updated,
-           (SELECT count(*) FROM message m WHERE m.session_id = s.id) as message_count
-    FROM session s
+           $message_count as message_count
+    FROM $inventory s
     WHERE ${session_filter}
     ORDER BY s.time_created DESC
     LIMIT $limit;

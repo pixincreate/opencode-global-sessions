@@ -226,6 +226,9 @@ sesh list <limit> --json
 ```
 
 Then it renders those rows in an OpenCode picker.
+The v2 picker adds `--native-v2` to list only sessions that the v2 server can open.
+Ordinary CLI reads retain legacy-only sessions for inspection.
+Listing counts messages directly from their source tables without normalizing transcript content.
 
 Read commands enable SQLite query-only mode.
 On v1-only databases, `sesh move ... --apply` creates a backup next to `opencode.db`, then updates one existing `session` row to point at an existing `project` row.
