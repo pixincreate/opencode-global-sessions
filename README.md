@@ -215,8 +215,6 @@ Search options:
 
 The index reads `opencode.db` in read-only mode and never modifies it.
 Delete the index file at any time; the next search rebuilds it.
-The index lives in the XDG cache directory because it is rebuildable.
-It is built atomically (written to a temporary file, then renamed) and carries a versioned stamp (format version, tokenizer, and source database); a mismatch rebuilds it from scratch.
 
 Direct commands still work if you already know the session ID:
 
@@ -251,9 +249,6 @@ V2 takes precedence when both schemas contain the same session ID.
 Legacy-only sessions remain readable.
 Set `OPENCODE_DB` to override the database path.
 The default respects `XDG_DATA_HOME`.
-
-`sesh search` uses a local FTS5 sidecar index on v2-only databases.
-The index syncs incrementally and never writes to `opencode.db`.
 
 The CLI reads the database. The OpenCode TUI plugin calls:
 

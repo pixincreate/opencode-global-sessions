@@ -292,7 +292,7 @@ index_sync() {
   escaped_db="$(escape_sql "$DB")"
   # The stamp covers the index format version, the tokenizer, and the source
   # database. A mismatch discards the index and rebuilds it from scratch.
-  stamp="1:trigram:${escaped_db}"
+  stamp="2:trigram:${escaped_db}"
   # ATTACH the source database through a read-only URI. Percent-encode the
   # characters that would otherwise be parsed as URI delimiters.
   uri_db="${DB//%/%25}"
@@ -303,15 +303,18 @@ index_sync() {
   mkdir -p "$(dirname "$target")" 2>/dev/null || return 1
 
   if [[ -f "$target" ]]; then
-    existing_stamp=$(sqlite3 "$target" "SELECT value FROM meta WHERE key='stamp';" 2>/dev/null || true)
+    # Wait for a concurrent writer so a transient lock is not mistaken for a
+    # stamp mismatch, which would delete a valid index. The PRAGMA also prints
+    # its value, so keep only the stamp line.
+    existing_stamp=$(sqlite3 "$target" "PRAGMA busy_timeout=5000; SELECT value FROM meta WHERE key='stamp';" 2>/dev/null | tail -n 1 || true)
     if [[ "$existing_stamp" != "$stamp" ]]; then
-      rm -f "$target" "$target-wal" "$target-shm"
+      rm -f "$target"
     fi
   fi
 
   sql=$(cat <<SQL
 PRAGMA busy_timeout=5000;
-CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(session_id UNINDEXED, source UNINDEXED, text, tokenize='trigram');
+CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(session_id UNINDEXED, text, tokenize='trigram');
 CREATE TABLE IF NOT EXISTS sync_state(session_id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ATTACH DATABASE 'file:${uri_db}?mode=ro' AS src;
@@ -322,16 +325,16 @@ FROM src.session_v2 s
 LEFT JOIN sync_state st ON st.session_id = s.id
 WHERE st.session_id IS NULL OR COALESCE(s.time_updated,0) > st.time_updated;
 DELETE FROM search_fts WHERE session_id IN (SELECT id FROM to_sync);
-INSERT INTO search_fts(session_id, source, text)
-SELECT id, 'title', COALESCE(title, '') FROM src.session_v2 WHERE id IN (SELECT id FROM to_sync);
-INSERT INTO search_fts(session_id, source, text)
-SELECT id, 'directory', COALESCE(directory, '') FROM src.session_v2 WHERE id IN (SELECT id FROM to_sync);
-INSERT INTO search_fts(session_id, source, text)
-SELECT m.session_id, 'message', COALESCE(json_extract(m.data, '\$.text'), '')
+INSERT INTO search_fts(session_id, text)
+SELECT id, COALESCE(title, '') FROM src.session_v2 WHERE id IN (SELECT id FROM to_sync);
+INSERT INTO search_fts(session_id, text)
+SELECT id, COALESCE(directory, '') FROM src.session_v2 WHERE id IN (SELECT id FROM to_sync);
+INSERT INTO search_fts(session_id, text)
+SELECT m.session_id, COALESCE(json_extract(m.data, '\$.text'), '')
 FROM src.session_message m
 WHERE m.type = 'user' AND m.session_id IN (SELECT id FROM to_sync);
-INSERT INTO search_fts(session_id, source, text)
-SELECT m.session_id, 'message', COALESCE(json_extract(c.value, '\$.text'), '')
+INSERT INTO search_fts(session_id, text)
+SELECT m.session_id, COALESCE(json_extract(c.value, '\$.text'), '')
 FROM src.session_message m, json_each(m.data, '\$.content') c
 WHERE m.type = 'assistant' AND json_extract(c.value, '\$.type') = 'text'
   AND m.session_id IN (SELECT id FROM to_sync);
@@ -348,40 +351,10 @@ SQL
   fi
 }
 
-# Build a fresh index into a temp file and swap it in, so an interrupted
-# build never leaves a corrupt index behind.
-index_build_atomic() {
-  local quiet="${1:-0}"
-  local tmp="${INDEX_DB}.tmp"
-  rm -f "$tmp" "$tmp-wal" "$tmp-shm"
-  if ! index_sync "$quiet" "$tmp"; then
-    rm -f "$tmp" "$tmp-wal" "$tmp-shm"
-    return 1
-  fi
-  mv "$tmp" "$INDEX_DB"
-  rm -f "$tmp-wal" "$tmp-shm"
-}
-
-index_query_eligible() {
-  local query="$1"
-  local fuzzy="$2"
-  local words=() word
-  if (( fuzzy )); then
-    IFS=' ' read -ra words <<< "$query"
-  else
-    words=("$query")
-  fi
-  if (( ${#words[@]} == 0 )); then
-    return 1
-  fi
-  for word in "${words[@]}"; do
-    if (( ${#word} >= 3 )); then
-      return 0
-    fi
-  done
-  return 1
-}
-
+# Return the FTS5 MATCH expression for a query, or an empty string when the
+# query is not trigram-eligible. Every word must be at least three characters
+# long: shorter words cannot match a trigram, so the LIKE fallback must run
+# instead. This keeps the index and --no-index paths equivalent.
 index_match_expr() {
   local query="$1"
   local fuzzy="$2"
@@ -391,12 +364,10 @@ index_match_expr() {
   else
     words=("$query")
   fi
-  if (( ${#words[@]} == 0 )); then
-    printf '%s' '""'
-    return
-  fi
-  for word in "${words[@]}"; do
-    [[ -z "$word" ]] && continue
+  for word in ${words[@]+"${words[@]}"}; do
+    if (( ${#word} < 3 )); then
+      return
+    fi
     escaped_word="${word//\"/\"\"}"
     if [[ -z "$expr" ]]; then
       expr="\"${escaped_word}\""
@@ -408,12 +379,10 @@ index_match_expr() {
 }
 
 index_search_ids() {
-  local query="$1"
-  local fuzzy="$2"
-  local match_expr match_sql
-  match_expr="$(index_match_expr "$query" "$fuzzy")"
+  local match_expr="$1"
+  local match_sql
   match_sql="$(escape_sql "$match_expr")"
-  sqlite3 "$INDEX_DB" "SELECT DISTINCT session_id FROM search_fts WHERE search_fts MATCH '${match_sql}' LIMIT 500;" 2>/dev/null
+  sqlite3 "$INDEX_DB" "SELECT DISTINCT session_id FROM search_fts WHERE search_fts MATCH '${match_sql}';" 2>/dev/null
 }
 
 format_session_row() {
@@ -577,16 +546,17 @@ cmd_search() {
   escaped="$(escape_sql "$query")"
 
   local where_clause=""
+  local match_expr
+  match_expr="$(index_match_expr "$query" "$fuzzy")"
 
   # Prefer the sidecar FTS5 index on v2-only databases. Any failure falls
   # through to the LIKE scan below.
-  if (( use_index && search_content )) && [[ "$HAS_V2" == 2 && "$HAS_V1" == 0 ]] && index_query_eligible "$query" "$fuzzy"; then
+  if (( use_index && search_content )) && [[ "$HAS_V2" == 2 && "$HAS_V1" == 0 && -n "$match_expr" ]]; then
     if [[ ! -f "$INDEX_DB" ]]; then
       echo "sesh: building search index (one-time)…" >&2
-      index_build_atomic 1 || true
     fi
     local index_ids=""
-    if index_sync 1 && index_ids="$(index_search_ids "$query" "$fuzzy")"; then
+    if index_sync 1 && index_ids="$(index_search_ids "$match_expr")"; then
       if [[ -z "$index_ids" ]]; then
         where_clause="0"
       else
@@ -595,11 +565,7 @@ cmd_search() {
           [[ -z "$index_id" ]] && continue
           index_id_list="${index_id_list}'$(escape_sql "$index_id")',"
         done <<< "$index_ids"
-        if [[ -z "$index_id_list" ]]; then
-          where_clause="0"
-        else
-          where_clause="s.id IN (${index_id_list%,})"
-        fi
+        where_clause="s.id IN (${index_id_list%,})"
       fi
     fi
   fi
@@ -706,13 +672,17 @@ cmd_index() {
   local start end elapsed sessions
   start=$(date +%s)
 
+  if (( rebuild )); then
+    rm -f "$INDEX_DB"
+  fi
+
   if (( rebuild )) || [[ ! -f "$INDEX_DB" ]]; then
-    if ! index_build_atomic 0; then
+    if ! index_sync 0; then
       echo "Error: failed to build search index at ${INDEX_DB}" >&2
       exit 1
     fi
   elif ! index_sync 0; then
-    echo "Error: failed to build search index at ${INDEX_DB}" >&2
+    echo "Error: failed to refresh search index at ${INDEX_DB}" >&2
     exit 1
   fi
 

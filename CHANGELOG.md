@@ -6,7 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Local FTS5 search index for v2-only databases, stored in the XDG cache directory (`~/.cache/sesh/index.db`). `sesh search` builds it on first use and syncs it incrementally. It is built atomically (temporary file, then rename) and carries a versioned stamp (format version, tokenizer, source database) that rebuilds it on mismatch. Manage it with `sesh index [--rebuild]`, bypass it with `--no-index`, and override its path with `SESH_INDEX_DB`.
+- Local FTS5 search index for v2-only databases, stored in the XDG cache directory (`~/.cache/sesh/index.db`). `sesh search` builds it on first use and syncs it incrementally, and it carries a versioned stamp (format version, tokenizer, source database) that rebuilds it on mismatch.
+- `sesh index [--rebuild]` builds or refreshes the index; `--no-index` bypasses it.
+- `SESH_INDEX_DB` overrides the index path.
 - `sesh search --title` (alias `--no-content`) searches titles and directories only.
 - Restore OpenCode v1 support alongside v2 through separate TUI entrypoints.
 - Read v1, v2, and mixed session databases, with v2 taking precedence for migrated sessions.

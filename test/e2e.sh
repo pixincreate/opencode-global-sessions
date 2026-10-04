@@ -563,6 +563,30 @@ assert_not_contains "$(run search edited-visible --title --json)" "$SESSION_ID"
 short_query_json="$(run search ab --json)"
 json_assert "$short_query_json" 'assert(Array.isArray(data), "short query must fall back to LIKE search")'
 
+# A mixed-length fuzzy query must use the LIKE path: a fuzzy word shorter
+# than a trigram disables the index, so indexed and --no-index agree.
+mixed_fuzzy_indexed="$(run search 'it zzz' --fuzzy --json)"
+mixed_fuzzy_no_index="$(run search 'it zzz' --fuzzy --json --no-index)"
+[[ "$mixed_fuzzy_indexed" == "$mixed_fuzzy_no_index" ]] || { printf 'Mixed-length fuzzy index and --no-index search outputs differ\n' >&2; exit 1; }
+assert_contains "$mixed_fuzzy_indexed" "$SESSION_ID"
+
+# A broad match must not be capped before the outer date and subagent filters
+# run. Insert more than 500 matching sessions and check that the indexed path
+# returns every row that --no-index returns.
+broad_sessions_sql="$TMPDIR/broad-sessions.sql"
+: > "$broad_sessions_sql"
+broad_index=1
+while [[ "$broad_index" -le 501 ]]; do
+  printf "INSERT INTO session_v2 (id,project_id,parent_id,directory,title,time_created,time_updated) VALUES ('ses_broad%04d','proj_test',NULL,'/tmp/broad-project','Broad fixture %d',%d,%d);\n" \
+    "$broad_index" "$broad_index" "$((OLDER_MS + broad_index))" "$((OLDER_MS + broad_index))" >> "$broad_sessions_sql"
+  broad_index=$((broad_index + 1))
+done
+sqlite3 "$DB" < "$broad_sessions_sql"
+broad_indexed="$(run search broad --limit 1000 --json)"
+broad_no_index="$(run search broad --limit 1000 --json --no-index)"
+[[ "$broad_indexed" == "$broad_no_index" ]] || { printf 'Broad index and --no-index search outputs differ; candidates may be capped\n' >&2; exit 1; }
+json_assert "$broad_indexed" 'assert(data.length === 501, "broad search should return every matching session")'
+
 # A partially migrated DB exposes legacy-only IDs, never stale duplicate content.
 sqlite3 "$DB" <<SQL
 ATTACH DATABASE '$legacy_db' AS legacy;
