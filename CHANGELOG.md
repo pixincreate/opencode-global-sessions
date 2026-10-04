@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-04
+
 ### Added
 
 - Local FTS5 search index for v2-only databases, stored in the XDG cache directory (`~/.cache/sesh/index.db`). `sesh search` builds it on first use and syncs it incrementally, and it carries a versioned stamp (format version, tokenizer, source database) that rebuilds it on mismatch.
