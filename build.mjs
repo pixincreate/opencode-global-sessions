@@ -10,6 +10,9 @@ await esbuild.build({
   sourcemap: true,
   entryPoints: ["./src/plugin/tui.ts"],
   outfile: "./dist/tui.js",
+  // OpenCode loads the TUI plugin at runtime and resolves the plugin and
+  // rendering modules itself. Bundling them would duplicate the host runtime.
+  external: ["@opencode/plugin", "@opencode/plugin/tui"],
 });
 
 console.log("Built!");

@@ -2,6 +2,9 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import type { Plugin } from "@opencode/plugin/tui";
+import type { TuiPluginApi, TuiPluginModule, TuiToast } from "@opencode-ai/plugin/tui";
+import type { Context } from "@opencode/plugin/tui/context";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_LIMIT = 50;
@@ -13,58 +16,6 @@ type SessionRow = {
   updated: string;
   message_count: number;
 };
-
-type DialogSelectOption<Value> = {
-  title: string;
-  value: Value;
-  description?: string;
-  footer?: string;
-  category?: string;
-};
-
-type TuiApi = {
-  keymap: {
-    registerLayer(layer: {
-      commands: Array<{
-        name: string;
-        title: string;
-        category: string;
-        namespace: string;
-        slashName: string;
-        desc: string;
-        run: () => Promise<void>;
-      }>;
-    }): () => void;
-  };
-  route: {
-    navigate(name: string, params?: Record<string, unknown>): void;
-  };
-  ui: {
-    DialogSelect<Value>(props: {
-      title: string;
-      placeholder: string;
-      options: DialogSelectOption<Value>[];
-      onSelect(option: DialogSelectOption<Value>): void;
-    }): unknown;
-    dialog: {
-      setSize(size: "medium" | "large" | "xlarge"): void;
-      replace(render: () => unknown): void;
-      clear(): void;
-    };
-    toast(input: {
-      variant: "info" | "error";
-      title: string;
-      message: string;
-      duration: number;
-    }): void;
-  };
-};
-
-type TuiPlugin = (
-  api: TuiApi,
-  options: unknown,
-  meta: unknown,
-) => Promise<void>;
 
 // The npm package ships the sesh CLI next to dist/tui.js, so an npm install
 // works without the curl installer. SESH_BIN still overrides everything.
@@ -108,10 +59,10 @@ export const parseSessionRows = (text: string): SessionRow[] => {
   });
 };
 
-const loadSessions = async (limit: number): Promise<SessionRow[]> => {
+const loadSessions = async (limit: number, nativeV2: boolean): Promise<SessionRow[]> => {
   const { stdout } = await execFileAsync(
     getSeshBin(),
-    ["list", String(limit), "--json"],
+    ["list", String(limit), "--json", ...(nativeV2 ? ["--native-v2"] : [])],
     { encoding: "utf8" },
   );
 
@@ -125,7 +76,13 @@ const formatDirectory = (directory: string): string => {
 
 const sessionOption = (
   session: SessionRow,
-): DialogSelectOption<SessionRow> => ({
+): {
+  title: string;
+  value: SessionRow;
+  description: string;
+  footer: string;
+  category: string;
+} => ({
   title: session.title || "(untitled)",
   value: session,
   description: formatDirectory(session.directory),
@@ -152,15 +109,22 @@ const errorMessage = (error: unknown): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
+export interface PickerHost {
+  pick(options: ReturnType<typeof sessionOption>[]): Promise<SessionRow | undefined>;
+  navigate(sessionID: string): void;
+  toast(input: TuiToast): void;
+}
+
 export const openRecentSessions = async (
-  api: TuiApi,
+  host: PickerHost,
   limit: number,
+  nativeV2 = false,
 ): Promise<void> => {
   try {
-    const sessions = await loadSessions(limit);
+    const sessions = await loadSessions(limit, nativeV2);
 
     if (sessions.length === 0) {
-      api.ui.toast({
+      host.toast({
         variant: "info",
         title: "sesh",
         message: "No global sessions found.",
@@ -169,20 +133,12 @@ export const openRecentSessions = async (
       return;
     }
 
-    api.ui.dialog.replace(() =>
-      api.ui.DialogSelect<SessionRow>({
-        title: "Recent global sessions",
-        placeholder: "Search sessions",
-        options: sessions.map(sessionOption),
-        onSelect: (option) => {
-          api.ui.dialog.clear();
-          api.route.navigate("session", { sessionID: option.value.id });
-        },
-      }),
-    );
-    api.ui.dialog.setSize("xlarge");
+    const selected = await host.pick(sessions.map(sessionOption));
+
+    if (!selected) return;
+    host.navigate(selected.id);
   } catch (error) {
-    api.ui.toast({
+    host.toast({
       variant: "error",
       title: "sesh",
       message: errorMessage(error),
@@ -191,22 +147,64 @@ export const openRecentSessions = async (
   }
 };
 
-const tui: TuiPlugin = async (api, options) => {
-  const limit = parseLimit(options);
+const v2Picker = (context: Context): PickerHost => ({
+  pick(options) {
+    context.ui.dialog.set({ size: "xlarge" });
+    return context.ui.dialog.select<SessionRow>({ title: "Recent global sessions", placeholder: "Search sessions", options });
+  },
+  navigate: (sessionID) => context.ui.router.navigate({ type: "session", sessionID }),
+  toast: (input) => context.ui.toast.show(input),
+});
 
-  api.keymap.registerLayer({
-    commands: [
-      {
-        name: "sesh.sessions.recent",
-        title: "Sesh: recent sessions",
-        category: "Sessions",
-        namespace: "palette",
-        slashName: "sessions-global",
-        desc: "Open recent global OpenCode sessions",
-        run: () => openRecentSessions(api, limit),
+const v1Picker = (api: TuiPluginApi): PickerHost => ({
+  pick: (options) => new Promise((resolve) => {
+    api.ui.dialog.setSize("xlarge");
+    api.ui.dialog.replace(() => api.ui.DialogSelect<SessionRow>({
+      title: "Recent global sessions", placeholder: "Search sessions", options,
+      onSelect(option) { resolve(option.value); api.ui.dialog.clear(); },
+    }), () => resolve(undefined));
+  }),
+  navigate: (sessionID) => api.route.navigate("session", { sessionID }),
+  toast: (input) => api.ui.toast(input),
+});
+
+export default {
+  id: "opencode-global-sessions.tui",
+  async tui(api, options) {
+    const limit = parseLimit(options);
+    api.keymap.registerLayer({ commands: [{
+      name: "sesh.sessions.recent", title: "Sesh: recent sessions", category: "Sessions", namespace: "palette",
+      slashName: "sessions-global", desc: "Open recent global OpenCode sessions",
+      run: () => openRecentSessions(v1Picker(api), limit),
+    }] });
+  },
+  async setup(context) {
+    const limit = parseLimit(context.options);
+
+    // The keymap layer needs a reactive owner, so claim an app slot and
+    // register the command while the slot is mounted.
+    const unregister = context.ui.slot({
+      append: "app",
+      render() {
+        context.keymap.layer(() => ({
+          mode: "global",
+          commands: [
+            {
+              id: "sesh.sessions.recent",
+              title: "Sesh: recent sessions",
+              description: "Open recent global OpenCode sessions",
+              group: "Sessions",
+              palette: true,
+              slash: { name: "sessions-global" },
+              run: () => openRecentSessions(v2Picker(context), limit, true),
+            },
+          ],
+          bindings: ["sesh.sessions.recent"],
+        }));
+        return null;
       },
-    ],
-  });
-};
+    });
 
-export default { id: "opencode-global-sessions.tui", tui };
+    return unregister;
+  },
+} satisfies TuiPluginModule & Plugin.Definition;

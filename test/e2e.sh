@@ -201,6 +201,7 @@ INSERT INTO part VALUES ('prt_quiet_user_1', 'msg_quiet_user_1', '$NO_FILE_SESSI
 INSERT INTO part VALUES ('prt_subagent_user_1', 'msg_subagent_user_1', '$SUBAGENT_SESSION_ID', $((NOW_MS + 5000)), $((NOW_MS + 5000)), '{"type":"text","text":"subagent-marker internal exploration"}');
 SQL
 
+sqlite3 "$DB" "ALTER TABLE session ADD COLUMN parent_id TEXT;"
 sqlite3 "$DB" "PRAGMA journal_mode=WAL;" >/dev/null
 
 run() {
@@ -460,6 +461,104 @@ assert_contains "$stats_verbose_output" "Total messages:      8"
 config_output="$(run config)"
 assert_contains "$config_output" "$DB"
 
+# Native v2 storage: control messages are not conversational messages, and
+# transcript sequence remains authoritative when timestamps tie.
+legacy_db="$DB"
+DB="$TMPDIR/v2.db"
+sqlite3 "$DB" <<SQL
+ATTACH DATABASE '$legacy_db' AS legacy;
+CREATE TABLE project AS SELECT * FROM legacy.project;
+CREATE TABLE session_v2 AS SELECT * FROM legacy.session WHERE id='$SESSION_ID';
+UPDATE session_v2 SET title='V2 authoritative session';
+CREATE TABLE session_message (id TEXT PRIMARY KEY,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,time_updated INTEGER,data TEXT);
+INSERT INTO session_message VALUES
+('msg_v2_switch','$SESSION_ID','model-switched',1,$NOW_MS,$NOW_MS,'{"model":{"id":"test-model","providerID":"test-provider"},"time":{"created":$NOW_MS}}'),
+('msg_v2_user','$SESSION_ID','user',2,$NOW_MS,$NOW_MS,'{"text":"v2 prompt with apostrophe: it''s valid","files":[],"agents":[],"skills":[],"time":{"created":$NOW_MS}}'),
+('msg_v2_assistant','$SESSION_ID','assistant',3,$NOW_MS,$NOW_MS,'{"model":{"id":"test-model","providerID":"test-provider"},"agent":"build","time":{"created":$NOW_MS},"content":[{"type":"reasoning","text":"hidden-reasoning"},{"type":"text","text":"first-visible"},{"type":"tool","name":"shell","id":"tool1","state":{"status":"completed","input":{},"content":[{"type":"text","text":"hidden-tool-output"}]}},{"type":"text","text":"second-visible"}],"snapshot":{"files":["src/a.ts","src/b.ts"]},"finish":"stop"}');
+SQL
+sqlite3 "$DB" <<SQL
+UPDATE session_message SET data=json_set(data,'$.tokens',json('{"input":10,"output":20,"reasoning":3,"cache":{"read":4,"write":5}}')) WHERE id='msg_v2_assistant';
+INSERT INTO session_v2 SELECT * FROM session_v2 WHERE id='$SESSION_ID';
+UPDATE session_v2 SET id='ses_v2_child',parent_id='$SESSION_ID',title='Investigate child logs',time_created=time_created+100,time_updated=time_updated+100 WHERE rowid=last_insert_rowid();
+SQL
+v2_before="$(sqlite3 "$DB" .dump)"
+v2_list="$(run list --json)"
+assert_contains "$v2_list" '"message_count":2'
+assert_contains "$v2_list" 'V2 authoritative session'
+assert_not_contains "$v2_list" 'ses_v2_child'
+assert_contains "$(run list --verbose --json)" 'ses_v2_child'
+assert_contains "$(run list 1 --json)" "$SESSION_ID"
+assert_not_contains "$(run search Investigate --json)" 'ses_v2_child'
+assert_contains "$(run search Investigate --verbose --json)" 'ses_v2_child'
+assert_not_contains "$(run today)" 'ses_v2_child'
+assert_contains "$(run stats)" 'Total sessions:      1'
+assert_contains "$(run search "it's valid" --json)" "$SESSION_ID"
+assert_contains "$(run prompts "$SESSION_ID")" "it's valid"
+v2_log="$(run log "$SESSION_ID")"
+[[ "$v2_log" == *"first-visible"*"second-visible"* ]] || { printf 'V2 log changed text content order\n' >&2; exit 1; }
+assert_not_contains "$v2_log" "hidden-reasoning"
+assert_not_contains "$v2_log" "hidden-tool-output"
+assert_contains "$(run show "$SESSION_ID")" "2 total (1 user, 1 assistant)"
+assert_contains "$(run show "$SESSION_ID")" "tokens: 42"
+sqlite3 "$DB" "UPDATE session_message SET data=json_remove(data,'\$.tokens') WHERE id='msg_v2_assistant';"
+assert_contains "$(run show "$SESSION_ID")" "tokens: ?"
+sqlite3 "$DB" "UPDATE session_message SET data=json_set(data,'\$.tokens',json('{\"input\":10,\"output\":20,\"reasoning\":3,\"cache\":{\"read\":4,\"write\":5}}')) WHERE id='msg_v2_assistant';"
+v2_before="$(sqlite3 "$DB" .dump)"
+assert_contains "$(run files "$SESSION_ID")" "src/b.ts"
+assert_contains "$(run today)" "$SESSION_ID"
+assert_contains "$(run stats)" "Total messages:      2"
+assert_fails move "$SESSION_ID" /tmp/sesh-test-project --apply
+assert_fails move "$SESSION_ID" /tmp/sesh-test-project
+[[ "$(sqlite3 "$DB" .dump)" == "$v2_before" ]] || { printf 'V2 read or rejected move changed database\n' >&2; exit 1; }
+for backup in "$DB.sesh-backup-"*; do
+  [[ ! -e "$backup" ]] || { printf 'Rejected move created backup\n' >&2; exit 1; }
+done
+
+assert_not_contains "$(run search hidden-reasoning --json)" "$SESSION_ID"
+assert_not_contains "$(run search hidden-tool-output --json)" "$SESSION_ID"
+sqlite3 "$DB" <<SQL
+INSERT INTO session_v2 SELECT * FROM session_v2 WHERE id='$SESSION_ID';
+UPDATE session_v2 SET id='ses_v2_empty',title=NULL,time_created=time_created+1,time_updated=time_updated+1 WHERE rowid=last_insert_rowid();
+UPDATE session_message SET data=json_set(data,'$.content[1].text','edited-visible') WHERE id='msg_v2_assistant';
+SQL
+empty_list="$(run list 1 --json)"
+assert_contains "$empty_list" 'ses_v2_empty'
+assert_contains "$empty_list" '"title":null'
+assert_contains "$empty_list" '"message_count":0'
+assert_not_contains "$empty_list" "$SESSION_ID"
+assert_contains "$(run show ses_v2_empty)" "0 total (0 user, 0 assistant)"
+assert_not_contains "$(run log ses_v2_empty)" "edited-visible"
+assert_contains "$(run log "$SESSION_ID")" "edited-visible"
+assert_not_contains "$(run log "$SESSION_ID")" "first-visible"
+assert_contains "$(run search edited-visible --json)" "$SESSION_ID"
+assert_not_contains "$(run search first-visible --json)" "$SESSION_ID"
+
+# A partially migrated DB exposes legacy-only IDs, never stale duplicate content.
+sqlite3 "$DB" <<SQL
+ATTACH DATABASE '$legacy_db' AS legacy;
+CREATE TABLE session AS SELECT * FROM legacy.session;
+CREATE TABLE message AS SELECT * FROM legacy.message;
+CREATE TABLE part AS SELECT * FROM legacy.part;
+SQL
+mixed_list="$(run list --json)"
+assert_contains "$mixed_list" 'V2 authoritative session'
+assert_not_contains "$mixed_list" 'Test session with justfile'
+assert_contains "$mixed_list" "$OLD_SESSION_ID"
+assert_not_contains "$mixed_list" 'ses_v2_child'
+assert_contains "$(run list --verbose --json)" 'ses_v2_child'
+assert_contains "$(run show "$SESSION_ID")" 'tokens: 42'
+assert_not_contains "$(run log "$SESSION_ID")" "marker-final"
+assert_contains "$(run log "$OLD_SESSION_ID")" "legacy deployment notes"
+assert_fails move "$OLD_SESSION_ID" /tmp/sesh-test-project --apply
+sqlite3 "$DB" "UPDATE session SET time_created=9999999999999 WHERE id='$OLD_SESSION_ID';"
+assert_contains "$(run list 1 --json)" "$OLD_SESSION_ID"
+native_list="$(run list 1 --json --native-v2)"
+assert_contains "$native_list" 'ses_v2_empty'
+assert_not_contains "$native_list" "$OLD_SESSION_ID"
+assert_not_contains "$(run list 100 --json --native-v2)" "$OLD_SESSION_ID"
+DB="$legacy_db"
+assert_fails list --json --native-v2
+
 if OPENCODE_DB="$TMPDIR/missing.db" "$ROOT/sesh" list >"$TMPDIR/missing-db.out" 2>"$TMPDIR/missing-db.err"; then
   printf 'Expected missing database command to fail\n' >&2
   exit 1
@@ -468,14 +567,23 @@ missing_db_err="$(<"$TMPDIR/missing-db.err")"
 assert_contains "$missing_db_err" "Database not found"
 
 installer_home="$TMPDIR/installer-home"
+mkdir -p "$TMPDIR/detection-bin"
+printf '#!/bin/sh\nprintf "opencode unknown\\n"\n' >"$TMPDIR/detection-bin/opencode"
+chmod +x "$TMPDIR/detection-bin/opencode"
+if PATH="$TMPDIR/detection-bin:$PATH" SESH_INSTALL_BIN_DIR="$installer_home/bin" SESH_INSTALL_CONFIG="$installer_home/cli.json" SESH_INSTALL_STATE_DIR="$installer_home/state" "$ROOT/scripts/install.sh" >"$TMPDIR/detection.out" 2>"$TMPDIR/detection.err"; then
+  printf 'Expected ambiguous OpenCode version detection to fail\n' >&2
+  exit 1
+fi
+assert_contains "$(<"$TMPDIR/detection.err")" "cannot detect OpenCode version"
+[[ ! -e "$installer_home" ]] || { printf 'Failed detection must not create installation files\n' >&2; exit 1; }
 installer_bin="$installer_home/.local/bin"
-installer_config="$installer_home/.config/opencode/tui.jsonc"
+installer_config="$installer_home/.config/opencode/cli.json"
 SESH_INSTALL_BIN_DIR="$installer_bin" \
   SESH_INSTALL_CONFIG="$installer_config" \
   SESH_INSTALL_STATE_DIR="$installer_home/.local/share/opencode-global-sessions" \
   SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
   SESH_INSTALL_PLUGIN_SPEC="https://example.test/opencode-global-sessions-1.0.0.tgz" \
-  "$ROOT/scripts/install.sh" --version 1.0.0 >"$TMPDIR/install.out"
+  "$ROOT/scripts/install.sh" --opencode-version 2 --version 1.0.0 >"$TMPDIR/install.out"
 [[ -x "$installer_bin/sesh" ]] || { printf 'Expected installer to create executable sesh\n' >&2; exit 1; }
 installer_config_content="$(<"$installer_config")"
 assert_contains "$installer_config_content" "opencode-global-sessions:start"
@@ -484,10 +592,62 @@ assert_contains "$installer_config_content" "https://example.test/opencode-globa
 SESH_INSTALL_BIN_DIR="$installer_bin" \
   SESH_INSTALL_CONFIG="$installer_config" \
   SESH_INSTALL_STATE_DIR="$installer_home/.local/share/opencode-global-sessions" \
-  "$ROOT/scripts/install.sh" --uninstall >"$TMPDIR/uninstall.out"
+  "$ROOT/scripts/install.sh" --opencode-version 2 --uninstall >"$TMPDIR/uninstall.out"
 [[ ! -e "$installer_bin/sesh" ]] || { printf 'Expected uninstall to remove sesh\n' >&2; exit 1; }
 installer_config_after_uninstall="$(<"$installer_config")"
 assert_not_contains "$installer_config_after_uninstall" "opencode-global-sessions:start"
+
+for major in 1 2; do
+  key="plugin"
+  [[ "$major" == 2 ]] && key="plugins"
+  printf '{\n // "%s": ["example-plugin"],\n "%s": ["other-plugin"], "theme": "test"\n}\n' "$key" "$key" >"$installer_config"
+  for _iteration in 1 2; do
+    SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+      SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+      SESH_INSTALL_PLUGIN_SPEC="opencode-global-sessions@2.0.0" \
+      "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >/dev/null
+  done
+  CONFIG="$installer_config" MAJOR="$major" node --input-type=module <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
+const entry = process.env.MAJOR === "1" ? ["opencode-global-sessions@2.0.0", { limit: 50 }] : { package: "opencode-global-sessions@2.0.0", options: { limit: 50 } };
+assert.deepEqual(config, { [process.env.MAJOR === "1" ? "plugin" : "plugins"]: [entry, "other-plugin"], theme: "test" });
+JS
+  SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+    SESH_INSTALL_STATE_DIR="$installer_home/state" "$ROOT/scripts/install.sh" --opencode-version "$major" --uninstall >/dev/null
+  CONFIG="$installer_config" KEY="$key" node --input-type=module <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
+assert.deepEqual(config, { [process.env.KEY]: ["other-plugin"], theme: "test" });
+JS
+  printf '{\n  // "%s": ["example-plugin"],\n  "theme": "test"\n}\n' "$key" >"$installer_config"
+  for _iteration in 1 2; do
+    SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+      SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+      SESH_INSTALL_PLUGIN_SPEC="opencode-global-sessions@2.0.0" \
+      "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >/dev/null
+  done
+  CONFIG="$installer_config" KEY="$key" node --input-type=module <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
+assert.equal(config[process.env.KEY].length, 1);
+assert.equal(config.theme, "test");
+JS
+  SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+    SESH_INSTALL_STATE_DIR="$installer_home/state" "$ROOT/scripts/install.sh" --opencode-version "$major" --uninstall >/dev/null
+  printf '{\n /* example\n "%s": []\n */\n "theme": "test"\n}\n' "$key" >"$installer_config"
+  cp "$installer_config" "$TMPDIR/comment-config-original"
+  if SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
+    SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+    "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >"$TMPDIR/block-comment.out" 2>"$TMPDIR/block-comment.err"; then
+    printf 'Expected block-comment config to fail safely\n' >&2; exit 1
+  fi
+  assert_contains "$(<"$TMPDIR/block-comment.err")" 'Remove block comments'
+  cmp "$installer_config" "$TMPDIR/comment-config-original"
+done
 
 fake_repo="$TMPDIR/fake-repo"
 mkdir -p "$fake_repo/dist"
@@ -509,107 +669,156 @@ clone_home="$TMPDIR/clone-home"
 clone_state="$clone_home/.local/share/opencode-global-sessions"
 clone_repo="$clone_state/repo"
 clone_bin="$clone_home/.local/bin"
-clone_config="$clone_home/.config/opencode/tui.jsonc"
+clone_config="$clone_home/.config/opencode/cli.json"
 SESH_INSTALL_BIN_DIR="$clone_bin" \
   SESH_INSTALL_CONFIG="$clone_config" \
   SESH_INSTALL_STATE_DIR="$clone_state" \
   SESH_INSTALL_REPO_DIR="$clone_repo" \
   SESH_INSTALL_REPO_URL="$fake_repo" \
-  "$ROOT/scripts/install.sh" --clone >"$TMPDIR/clone-install.out"
+  "$ROOT/scripts/install.sh" --opencode-version 2 --clone >"$TMPDIR/clone-install.out"
 [[ -L "$clone_bin/sesh" ]] || { printf 'Expected clone install to symlink sesh\n' >&2; exit 1; }
 clone_config_content="$(<"$clone_config")"
-assert_contains "$clone_config_content" "$clone_repo/dist/tui.js"
+assert_contains "$clone_config_content" "$clone_repo/dist"
 
 SESH_INSTALL_BIN_DIR="$clone_bin" \
   SESH_INSTALL_CONFIG="$clone_config" \
   SESH_INSTALL_STATE_DIR="$clone_state" \
   SESH_INSTALL_REPO_DIR="$clone_repo" \
-  "$ROOT/scripts/install.sh" --uninstall >"$TMPDIR/clone-uninstall.out"
+  "$ROOT/scripts/install.sh" --opencode-version 2 --uninstall >"$TMPDIR/clone-uninstall.out"
 [[ ! -e "$clone_bin/sesh" ]] || { printf 'Expected clone uninstall to remove sesh symlink\n' >&2; exit 1; }
 [[ ! -e "$clone_repo" ]] || { printf 'Expected clone uninstall to remove managed repo\n' >&2; exit 1; }
 
+printf '#!/bin/sh\nprintf "[]\\n"\n' >"$TMPDIR/empty-sesh"
+printf '#!/bin/sh\nprintf "not-json\\n"\n' >"$TMPDIR/invalid-sesh"
+printf '#!/bin/sh\nprintf "fixture database unavailable\\n" >&2\nexit 1\n' >"$TMPDIR/failing-sesh"
+chmod +x "$TMPDIR/empty-sesh" "$TMPDIR/invalid-sesh" "$TMPDIR/failing-sesh"
 tui_output="$(
   cd "$ROOT"
-  OPENCODE_DB="$DB" SESH_BIN="$ROOT/sesh" node --input-type=module <<'JS'
+  OPENCODE_DB="$DB" SESH_TEST_NATIVE_DB="$TMPDIR/v2.db" SESH_BIN="$ROOT/sesh" SESH_TEST_EMPTY_BIN="$TMPDIR/empty-sesh" SESH_TEST_INVALID_BIN="$TMPDIR/invalid-sesh" SESH_TEST_FAIL_BIN="$TMPDIR/failing-sesh" node --input-type=module <<'JS'
 const mod = await import("./dist/tui.js")
 const plugin = mod.default
 const assert = (condition, message) => {
   if (!condition) throw new Error(message)
 }
 
-assert(plugin.id === "opencode-global-sessions.tui", "tui plugin should have stable id")
-assert(typeof plugin.tui === "function", "tui plugin should export tui function")
-
-let registeredLayer
-let selectedProps
+let slotClaim
+const layers = []
 let navigated
 let toast
-let dialogSize
-let cleared = false
+let dialogSet
+let selected
+let unregistered = false
+let dialogOpened = false
 
-const api = {
+const context = {
+  options: { limit: 1 },
   keymap: {
-    registerLayer(layer) {
-      registeredLayer = layer
-      return () => {}
+    layer(input) {
+      layers.push(input())
     },
   },
   ui: {
+    slot(claim) {
+      slotClaim = claim
+      return () => {
+        unregistered = true
+      }
+    },
+    toast: {
+      show(input) {
+        toast = input
+      },
+    },
     dialog: {
-      setSize(size) {
-        dialogSize = size
+      set(options) {
+        dialogSet = options
       },
-      replace(render) {
-        dialogSize = "medium"
-        render()
+      select(options) {
+        dialogOpened = true
+        selected = options
+        // The host resolves the selected option to its value.
+        return Promise.resolve(options.options[0].value)
       },
-      clear() {
-        cleared = true
+    },
+    router: {
+      navigate(destination) {
+        navigated = destination
       },
-      size: "medium",
-      depth: 0,
-      open: false,
-    },
-    DialogSelect(props) {
-      selectedProps = props
-      return null
-    },
-    toast(input) {
-      toast = input
-    },
-  },
-  route: {
-    current: { name: "home" },
-    navigate(name, params) {
-      navigated = { name, params }
     },
   },
 }
 
-await plugin.tui(api, { limit: 1 }, {})
-assert(registeredLayer.commands.length === 1, "tui should register one command")
-const command = registeredLayer.commands[0]
-assert(command.title === "Sesh: recent sessions", "command title should match plan")
-assert(command.category === "Sessions", "command category should match plan")
-assert(command.slashName === "sessions-global", "slash command should be /sessions-global")
+const cleanup = await plugin.setup(context)
+slotClaim.render({})
+const layer = layers[0]
+const command = layer.commands[0]
 
-await command.run({})
-assert(dialogSize === "xlarge", "picker should use a wide dialog")
-assert(selectedProps.title === "Recent global sessions", "picker title should match plan")
-assert(selectedProps.options.length === 1, "picker should show one fixture session")
-assert(selectedProps.options[0].value.id === "ses_test1234567890", "picker option should contain session id")
+const legacyDB = process.env.OPENCODE_DB
+process.env.OPENCODE_DB = process.env.SESH_TEST_NATIVE_DB
+await command.run()
+assert(selected.options.length === 1, "picker should show one fixture session")
+assert(selected.options[0].value.id === "ses_v2_empty", "v2 picker must offer native sessions before applying its limit")
+assert(navigated.type === "session", "selecting should navigate to the session route")
+assert(navigated.sessionID === "ses_v2_empty", "selecting should pass native sessionID")
 
-selectedProps.onSelect(selectedProps.options[0])
-assert(cleared, "selecting should clear dialog")
-assert(navigated.name === "session", "selecting should navigate to session route")
-assert(navigated.params.sessionID === "ses_test1234567890", "selecting should pass sessionID")
+navigated = undefined
+context.ui.dialog.select = () => { dialogOpened = true; return Promise.resolve(undefined) }
+await command.run()
+assert(navigated === undefined, "cancelling must not navigate")
+
+let legacyCommand
+process.env.OPENCODE_DB = legacyDB
+let legacyDestination
+let cancelLegacy = false
+const api = {
+  keymap: { registerLayer(layer) { legacyCommand = layer.commands[0]; return () => {} } },
+  route: { navigate(name, params) { legacyDestination = { name, params } } },
+  ui: {
+    toast(input) { toast = input },
+    dialog: {
+      setSize() {}, clear() {},
+      replace(render, onClose) { dialogOpened = true; if (cancelLegacy) onClose(); else render() },
+    },
+    DialogSelect(input) { input.onSelect(input.options[0]); return null },
+  },
+}
+await plugin.tui(api, { limit: 1 })
+await legacyCommand.run()
+assert(legacyDestination.name === "session" && legacyDestination.params.sessionID === "ses_test1234567890", "v1 selection must open selected session")
+legacyDestination = undefined
+cancelLegacy = true
+await legacyCommand.run()
+assert(legacyDestination === undefined, "v1 cancellation must not navigate")
 
 process.env.SESH_BIN = "/tmp/definitely-missing-sesh"
-selectedProps = undefined
 toast = undefined
-await command.run({})
+await command.run()
 assert(toast.variant === "error", "missing sesh should show error toast")
 assert(toast.message.includes("sesh binary not found"), "missing sesh error should be user-visible")
+
+for (const run of [() => command.run(), () => legacyCommand.run()]) {
+  process.env.SESH_BIN = process.env.SESH_TEST_EMPTY_BIN
+  toast = undefined
+  navigated = undefined
+  legacyDestination = undefined
+  selected = undefined
+  dialogOpened = false
+  await run()
+  assert(toast.variant === "info" && toast.message.includes("No global sessions"), "empty inventory should show information")
+  assert(navigated === undefined && legacyDestination === undefined && !dialogOpened, "empty inventory must not open a picker or navigate")
+  process.env.SESH_BIN = process.env.SESH_TEST_INVALID_BIN
+  toast = undefined
+  await run()
+  assert(toast.variant === "error", "invalid CLI JSON should show a visible error")
+  assert(navigated === undefined && legacyDestination === undefined, "invalid inventory must not navigate")
+  process.env.SESH_BIN = process.env.SESH_TEST_FAIL_BIN
+  toast = undefined
+  await run()
+  assert(toast.variant === "error" && toast.message.includes("fixture database unavailable"), "CLI failure should preserve its actionable diagnostic")
+}
+
+cleanup()
+assert(unregistered, "cleanup should unregister the slot")
 
 process.stdout.write("tui ok")
 JS
