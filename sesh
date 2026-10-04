@@ -2,6 +2,7 @@
 set -euo pipefail
 
 DB="${OPENCODE_DB:-${XDG_DATA_HOME:-${HOME}/.local/share}/opencode/opencode.db}"
+INDEX_DB="${SESH_INDEX_DB:-${XDG_CACHE_HOME:-${HOME}/.cache}/sesh/index.db}"
 
 
 usage() {
@@ -12,6 +13,7 @@ Usage:
   sesh list [n] [--json] [--verbose] [--native-v2]
                                       List n recent sessions (default: 10)
   sesh search <query> [options]     Search sessions globally by title/directory/message
+  sesh index [--rebuild]            Build or rebuild the local search index
   sesh show <id>                    Show full session details
   sesh log <id> [options]           Show user + assistant text log
   sesh prompts <id> [options]       Show user prompts only
@@ -26,10 +28,12 @@ Usage:
 
 Search options:
   --content                   Search message content too (default)
+  --title, --no-content       Search title and directory only
   --since <date>              Filter by start date (ISO 8601 or '7d', '30d')
   --until <date>              Filter by end date
   --limit <n>                 Max results (default: 20)
   --fuzzy                     Broader substring matching
+  --no-index                  Skip the local search index and use LIKE matching
   --json                      Output in JSON format (pipe to jq, fzf)
   --verbose                   Include OpenCode subagent sessions
 Log/prompts options:
@@ -40,10 +44,13 @@ Move options:
   --apply                     Back up the DB, then update the session
 Environment:
   OPENCODE_DB                 Path to opencode.db (default: ~/.local/share/opencode/opencode.db)
+  SESH_INDEX_DB               Path to the local search index (default: ~/.cache/sesh/index.db)
   SESH_BIN                    Path to sesh binary (for plugin, not CLI)
 Examples:
   sesh search justfile
   sesh search hyperswitch --since 7d --limit 5
+  sesh search justfile --title
+  sesh index --rebuild
   sesh show ses_xxxxxxxxxxxxxxxxxxxx
   sesh log ses_xxxxxxxxxxxxxxxxxxxx
   sesh prompts ses_xxxxxxxxxxxxxxxxxxxx --full
@@ -63,6 +70,14 @@ fi
 # Build connection-local, read-only projections. Never modify the host schema.
 HAS_V2=$(sqlite3 "$DB" "PRAGMA query_only=ON; SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('session_v2','session_message');")
 HAS_V1=$(sqlite3 "$DB" "PRAGMA query_only=ON; SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('session','message','part');")
+# A migrated database often keeps empty legacy tables. Probe once for legacy-only
+# sessions so the expensive mixed projection is skipped when nothing needs it.
+if [[ "$HAS_V2" == 2 && "$HAS_V1" == 3 ]]; then
+  LEGACY_SESSIONS=$(sqlite3 "$DB" "PRAGMA query_only=ON; SELECT EXISTS(SELECT 1 FROM main.session s WHERE NOT EXISTS (SELECT 1 FROM main.session_v2 v WHERE v.id=s.id));")
+  if [[ "$LEGACY_SESSIONS" == 0 ]]; then
+    HAS_V1=0
+  fi
+fi
 READ_SCHEMA=""
 if [[ "$HAS_V2" == 2 ]]; then
   READ_SCHEMA=$(cat <<'SQL'
@@ -152,7 +167,7 @@ read_db() {
   set -- "${@:1:$(($#-1))}"
   # Some SQLite builds cannot reopen a WAL database with -readonly after its
   # shared-memory file is removed. query_only protects all reads without losing WAL data.
-  sqlite3 "$@" "$DB" "${READ_SCHEMA} PRAGMA query_only=ON; ${sql}"
+  sqlite3 "$@" "$DB" "${READ_SCHEMA} PRAGMA query_only=ON; PRAGMA cache_size=-262144; ${sql}"
 }
 
 escape_sql() {
@@ -266,6 +281,141 @@ parse_date() {
   echo ""
 }
 
+# --- Local FTS5 search index -------------------------------------------------
+# The sidecar index lets `sesh search` avoid scanning message content. It is
+# only used for v2-only databases, and every index failure falls back to LIKE.
+
+index_sync() {
+  local quiet="${1:-0}"
+  local target="${2:-$INDEX_DB}"
+  local escaped_db uri_db sql stamp existing_stamp
+  escaped_db="$(escape_sql "$DB")"
+  # The stamp covers the index format version, the tokenizer, and the source
+  # database. A mismatch discards the index and rebuilds it from scratch.
+  stamp="1:trigram:${escaped_db}"
+  # ATTACH the source database through a read-only URI. Percent-encode the
+  # characters that would otherwise be parsed as URI delimiters.
+  uri_db="${DB//%/%25}"
+  uri_db="${uri_db//\?/%3F}"
+  uri_db="${uri_db//#/%23}"
+  uri_db="$(escape_sql "$uri_db")"
+
+  mkdir -p "$(dirname "$target")" 2>/dev/null || return 1
+
+  if [[ -f "$target" ]]; then
+    existing_stamp=$(sqlite3 "$target" "SELECT value FROM meta WHERE key='stamp';" 2>/dev/null || true)
+    if [[ "$existing_stamp" != "$stamp" ]]; then
+      rm -f "$target" "$target-wal" "$target-shm"
+    fi
+  fi
+
+  sql=$(cat <<SQL
+PRAGMA busy_timeout=5000;
+CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(session_id UNINDEXED, source UNINDEXED, text, tokenize='trigram');
+CREATE TABLE IF NOT EXISTS sync_state(session_id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+ATTACH DATABASE 'file:${uri_db}?mode=ro' AS src;
+INSERT OR REPLACE INTO meta(key,value) VALUES('stamp','${stamp}');
+CREATE TEMP TABLE to_sync AS
+SELECT s.id AS id, COALESCE(s.time_updated,0) AS time_updated
+FROM src.session_v2 s
+LEFT JOIN sync_state st ON st.session_id = s.id
+WHERE st.session_id IS NULL OR COALESCE(s.time_updated,0) > st.time_updated;
+DELETE FROM search_fts WHERE session_id IN (SELECT id FROM to_sync);
+INSERT INTO search_fts(session_id, source, text)
+SELECT id, 'title', COALESCE(title, '') FROM src.session_v2 WHERE id IN (SELECT id FROM to_sync);
+INSERT INTO search_fts(session_id, source, text)
+SELECT id, 'directory', COALESCE(directory, '') FROM src.session_v2 WHERE id IN (SELECT id FROM to_sync);
+INSERT INTO search_fts(session_id, source, text)
+SELECT m.session_id, 'message', COALESCE(json_extract(m.data, '\$.text'), '')
+FROM src.session_message m
+WHERE m.type = 'user' AND m.session_id IN (SELECT id FROM to_sync);
+INSERT INTO search_fts(session_id, source, text)
+SELECT m.session_id, 'message', COALESCE(json_extract(c.value, '\$.text'), '')
+FROM src.session_message m, json_each(m.data, '\$.content') c
+WHERE m.type = 'assistant' AND json_extract(c.value, '\$.type') = 'text'
+  AND m.session_id IN (SELECT id FROM to_sync);
+INSERT OR REPLACE INTO sync_state(session_id, time_updated) SELECT id, time_updated FROM to_sync;
+DELETE FROM search_fts WHERE session_id NOT IN (SELECT id FROM src.session_v2);
+DELETE FROM sync_state WHERE session_id NOT IN (SELECT id FROM src.session_v2);
+SQL
+)
+
+  if (( quiet )); then
+    sqlite3 "$target" "$sql" >/dev/null 2>/dev/null
+  else
+    sqlite3 "$target" "$sql" >/dev/null
+  fi
+}
+
+# Build a fresh index into a temp file and swap it in, so an interrupted
+# build never leaves a corrupt index behind.
+index_build_atomic() {
+  local quiet="${1:-0}"
+  local tmp="${INDEX_DB}.tmp"
+  rm -f "$tmp" "$tmp-wal" "$tmp-shm"
+  if ! index_sync "$quiet" "$tmp"; then
+    rm -f "$tmp" "$tmp-wal" "$tmp-shm"
+    return 1
+  fi
+  mv "$tmp" "$INDEX_DB"
+  rm -f "$tmp-wal" "$tmp-shm"
+}
+
+index_query_eligible() {
+  local query="$1"
+  local fuzzy="$2"
+  local words=() word
+  if (( fuzzy )); then
+    IFS=' ' read -ra words <<< "$query"
+  else
+    words=("$query")
+  fi
+  if (( ${#words[@]} == 0 )); then
+    return 1
+  fi
+  for word in "${words[@]}"; do
+    if (( ${#word} >= 3 )); then
+      return 0
+    fi
+  done
+  return 1
+}
+
+index_match_expr() {
+  local query="$1"
+  local fuzzy="$2"
+  local words=() word escaped_word expr=""
+  if (( fuzzy )); then
+    IFS=' ' read -ra words <<< "$query"
+  else
+    words=("$query")
+  fi
+  if (( ${#words[@]} == 0 )); then
+    printf '%s' '""'
+    return
+  fi
+  for word in "${words[@]}"; do
+    [[ -z "$word" ]] && continue
+    escaped_word="${word//\"/\"\"}"
+    if [[ -z "$expr" ]]; then
+      expr="\"${escaped_word}\""
+    else
+      expr="${expr} OR \"${escaped_word}\""
+    fi
+  done
+  printf '%s' "$expr"
+}
+
+index_search_ids() {
+  local query="$1"
+  local fuzzy="$2"
+  local match_expr match_sql
+  match_expr="$(index_match_expr "$query" "$fuzzy")"
+  match_sql="$(escape_sql "$match_expr")"
+  sqlite3 "$INDEX_DB" "SELECT DISTINCT session_id FROM search_fts WHERE search_fts MATCH '${match_sql}' LIMIT 500;" 2>/dev/null
+}
+
 format_session_row() {
   local id="$1"
   local dir="$2"
@@ -366,10 +516,13 @@ cmd_search() {
   local fuzzy=0
   local json_output=0
   local verbose=0
+  local use_index=1
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --content) search_content=1; shift;;
+      --title|--no-content) search_content=0; shift;;
+      --no-index) use_index=0; shift;;
       --since|--after)
         if [[ $# -lt 2 ]]; then
           echo "Error: $1 requires a value" >&2
@@ -424,41 +577,70 @@ cmd_search() {
   escaped="$(escape_sql "$query")"
 
   local where_clause=""
-  local wildcard="%"
-  local query_pattern="${wildcard}${escaped}${wildcard}"
 
-  if (( fuzzy )); then
-    # Fuzzy: match each word independently
-    local words
-    IFS=' ' read -ra words <<< "$escaped"
-    local fuzzy_conditions=()
-    for word in "${words[@]}"; do
-      fuzzy_conditions+=("(s.title LIKE '%${word}%' OR s.directory LIKE '%${word}%')")
-    done
-    local title_dir_condition="${fuzzy_conditions[0]}"
-    local i
-    for ((i = 1; i < ${#fuzzy_conditions[@]}; i++)); do
-      title_dir_condition="${title_dir_condition} OR ${fuzzy_conditions[$i]}"
-    done
-
-    where_clause="$title_dir_condition"
-
-    if (( search_content )); then
-      local part_conditions=()
-      for word in "${words[@]}"; do
-        part_conditions+=("json_extract(p.data, '$.text') LIKE '%${word}%'")
-      done
-      local part_condition="${part_conditions[0]}"
-      for ((i = 1; i < ${#part_conditions[@]}; i++)); do
-        part_condition="${part_condition} OR ${part_conditions[$i]}"
-      done
-      where_clause="($where_clause OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND json_extract(p.data, '$.type') = 'text' AND ($part_condition)))"
+  # Prefer the sidecar FTS5 index on v2-only databases. Any failure falls
+  # through to the LIKE scan below.
+  if (( use_index && search_content )) && [[ "$HAS_V2" == 2 && "$HAS_V1" == 0 ]] && index_query_eligible "$query" "$fuzzy"; then
+    if [[ ! -f "$INDEX_DB" ]]; then
+      echo "sesh: building search index (one-time)…" >&2
+      index_build_atomic 1 || true
     fi
-  else
-    where_clause="(s.title LIKE '${query_pattern}' OR s.directory LIKE '${query_pattern}')"
+    local index_ids=""
+    if index_sync 1 && index_ids="$(index_search_ids "$query" "$fuzzy")"; then
+      if [[ -z "$index_ids" ]]; then
+        where_clause="0"
+      else
+        local index_id_list="" index_id
+        while IFS= read -r index_id; do
+          [[ -z "$index_id" ]] && continue
+          index_id_list="${index_id_list}'$(escape_sql "$index_id")',"
+        done <<< "$index_ids"
+        if [[ -z "$index_id_list" ]]; then
+          where_clause="0"
+        else
+          where_clause="s.id IN (${index_id_list%,})"
+        fi
+      fi
+    fi
+  fi
 
-    if (( search_content )); then
-      where_clause="($where_clause OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND json_extract(p.data, '$.type') = 'text' AND json_extract(p.data, '$.text') LIKE '${query_pattern}'))"
+  if [[ -z "$where_clause" ]]; then
+    local wildcard="%"
+    local query_pattern="${wildcard}${escaped}${wildcard}"
+
+    if (( fuzzy )); then
+      # Fuzzy: match each word independently
+      local words
+      IFS=' ' read -ra words <<< "$escaped"
+      local fuzzy_conditions=()
+      for word in "${words[@]}"; do
+        fuzzy_conditions+=("(s.title LIKE '%${word}%' OR s.directory LIKE '%${word}%')")
+      done
+      local title_dir_condition="${fuzzy_conditions[0]}"
+      local i
+      for ((i = 1; i < ${#fuzzy_conditions[@]}; i++)); do
+        title_dir_condition="${title_dir_condition} OR ${fuzzy_conditions[$i]}"
+      done
+
+      where_clause="$title_dir_condition"
+
+      if (( search_content )); then
+        local part_conditions=()
+        for word in "${words[@]}"; do
+          part_conditions+=("json_extract(p.data, '$.text') LIKE '%${word}%'")
+        done
+        local part_condition="${part_conditions[0]}"
+        for ((i = 1; i < ${#part_conditions[@]}; i++)); do
+          part_condition="${part_condition} OR ${part_conditions[$i]}"
+        done
+        where_clause="($where_clause OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND json_extract(p.data, '$.type') = 'text' AND ($part_condition)))"
+      fi
+    else
+      where_clause="(s.title LIKE '${query_pattern}' OR s.directory LIKE '${query_pattern}')"
+
+      if (( search_content )); then
+        where_clause="($where_clause OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND json_extract(p.data, '$.type') = 'text' AND json_extract(p.data, '$.text') LIKE '${query_pattern}'))"
+      fi
     fi
   fi
 
@@ -488,10 +670,58 @@ ORDER BY s.time_created DESC
 LIMIT $limit;"
 
   if (( json_output )); then
-    read_db -json "$sql"
+    local json_result
+    json_result="$(read_db -json "$sql")"
+    if [[ -z "$json_result" ]]; then
+      printf '[]\n'
+    else
+      printf '%s\n' "$json_result"
+    fi
   else
     read_db -header -column "$sql"
   fi
+}
+
+cmd_index() {
+  local rebuild=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --rebuild) rebuild=1; shift;;
+      -h|--help)
+        echo "Usage: sesh index [--rebuild]"
+        exit 0
+        ;;
+      *)
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ "$HAS_V2" != 2 || "$HAS_V1" != 0 ]]; then
+    echo "Error: index requires a v2-only OpenCode database" >&2
+    exit 1
+  fi
+
+  local start end elapsed sessions
+  start=$(date +%s)
+
+  if (( rebuild )) || [[ ! -f "$INDEX_DB" ]]; then
+    if ! index_build_atomic 0; then
+      echo "Error: failed to build search index at ${INDEX_DB}" >&2
+      exit 1
+    fi
+  elif ! index_sync 0; then
+    echo "Error: failed to build search index at ${INDEX_DB}" >&2
+    exit 1
+  fi
+
+  sessions=$(sqlite3 "$INDEX_DB" "SELECT count(*) FROM sync_state;" 2>/dev/null || echo 0)
+  end=$(date +%s)
+  elapsed=$(( end - start ))
+
+  echo "Indexed ${sessions} sessions in ${elapsed}s"
+  echo "Index: ${INDEX_DB}"
 }
 
 cmd_show() {
@@ -976,6 +1206,7 @@ shift 2>/dev/null || true
 case "$cmd" in
   list)       cmd_list "$@";;
   search)     cmd_search "$@";;
+  index)      cmd_index "$@";;
   show)       cmd_show "${1:-}";;
   log)        cmd_messages log "${1:-}" "${@:2}";;
   prompts)    cmd_messages prompts "${1:-}" "${@:2}";;

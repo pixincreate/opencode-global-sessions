@@ -156,6 +156,7 @@ Pick a session:
 | ------------------ | ----------------------------------------------------- |
 | `sesh list [n]`    | list recent sessions                                  |
 | `sesh search q`    | search titles, directories, prompts, and text replies |
+| `sesh index`       | build or rebuild the local search index               |
 | `sesh show id`     | show session details                                  |
 | `sesh log id`      | show user and assistant text                          |
 | `sesh prompts id`  | show user prompts only                                |
@@ -172,6 +173,8 @@ Examples:
 sesh list 25 --json
 sesh search checkout --since 7d --limit 5
 sesh search webhook --fuzzy
+sesh search checkout --title
+sesh index --rebuild
 sesh log ses_xxx --limit 20
 sesh resume ses_xxx
 sesh move ses_xxx /path/to/project
@@ -184,6 +187,36 @@ OpenCode subagent sessions are hidden from discovery commands by default. Add `-
 sesh list --verbose
 sesh search tui --verbose
 ```
+
+### Search index
+
+On v2-only databases, `sesh search` uses a local FTS5 index to avoid scanning message content.
+The index lives at:
+
+```text
+~/.cache/sesh/index.db
+```
+
+The first search builds the index and prints a one-time notice.
+Later searches sync only changed sessions.
+
+Manage the index with:
+
+```bash
+sesh index            # build or refresh
+sesh index --rebuild  # rebuild from scratch
+```
+
+Search options:
+
+- `--title` (alias `--no-content`) searches titles and directories only.
+- `--no-index` skips the index and uses plain `LIKE` matching.
+- `SESH_INDEX_DB` overrides the index path.
+
+The index reads `opencode.db` in read-only mode and never modifies it.
+Delete the index file at any time; the next search rebuilds it.
+The index lives in the XDG cache directory because it is rebuildable.
+It is built atomically (written to a temporary file, then renamed) and carries a versioned stamp (format version, tokenizer, and source database); a mismatch rebuilds it from scratch.
 
 Direct commands still work if you already know the session ID:
 
@@ -218,6 +251,9 @@ V2 takes precedence when both schemas contain the same session ID.
 Legacy-only sessions remain readable.
 Set `OPENCODE_DB` to override the database path.
 The default respects `XDG_DATA_HOME`.
+
+`sesh search` uses a local FTS5 sidecar index on v2-only databases.
+The index syncs incrementally and never writes to `opencode.db`.
 
 The CLI reads the database. The OpenCode TUI plugin calls:
 

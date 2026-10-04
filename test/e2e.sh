@@ -205,7 +205,7 @@ sqlite3 "$DB" "ALTER TABLE session ADD COLUMN parent_id TEXT;"
 sqlite3 "$DB" "PRAGMA journal_mode=WAL;" >/dev/null
 
 run() {
-  OPENCODE_DB="$DB" "$ROOT/sesh" "$@"
+  OPENCODE_DB="$DB" SESH_INDEX_DB="$TMPDIR/index.db" "$ROOT/sesh" "$@"
 }
 
 assert_contains() {
@@ -250,7 +250,9 @@ assert_contains "$help_output" "sesh list [n] [--json]"
 assert_contains "$help_output" "sesh log <id>"
 assert_contains "$help_output" "sesh prompts <id>"
 assert_contains "$help_output" "sesh move <id> <target-project-dir>"
+assert_contains "$help_output" "sesh index [--rebuild]"
 assert_contains "$help_output" "--verbose"
+assert_contains "$help_output" "--no-index"
 
 default_output="$(run)"
 list_output="$(run list 1)"
@@ -276,6 +278,18 @@ assert_fails list --wat
 search_output="$(run search justfile --limit 1)"
 assert_contains "$search_output" "$SESSION_ID"
 assert_contains "$search_output" "updated"
+
+title_search_output="$(run search justfile --title --limit 1)"
+assert_contains "$title_search_output" "$SESSION_ID"
+
+title_content_excluded="$(run search marker-final --title --limit 5)"
+assert_not_contains "$title_content_excluded" "$SESSION_ID"
+
+no_content_search_output="$(run search justfile --no-content --limit 1)"
+assert_contains "$no_content_search_output" "$SESSION_ID"
+
+no_index_search_output="$(run search justfile --no-index --limit 1)"
+assert_contains "$no_index_search_output" "$SESSION_ID"
 
 content_search_output="$(run search marker-final --limit 1)"
 assert_contains "$content_search_output" "$SESSION_ID"
@@ -490,6 +504,14 @@ assert_contains "$(run list --verbose --json)" 'ses_v2_child'
 assert_contains "$(run list 1 --json)" "$SESSION_ID"
 assert_not_contains "$(run search Investigate --json)" 'ses_v2_child'
 assert_contains "$(run search Investigate --verbose --json)" 'ses_v2_child'
+# The sidecar index serves v2-only searches; --no-index must agree with it.
+assert_contains "$(run search 'Investigate child' --fuzzy --verbose --json)" 'ses_v2_child'
+indexed_result="$(run search "it's valid" --json)"
+no_index_result="$(run search "it's valid" --json --no-index)"
+[[ "$indexed_result" == "$no_index_result" ]] || { printf 'Indexed and --no-index search outputs differ\n' >&2; exit 1; }
+[[ -f "$TMPDIR/index.db" ]] || { printf 'Expected v2 search to build the sidecar index\n' >&2; exit 1; }
+assert_contains "$(run index)" "Indexed"
+assert_contains "$(run index --rebuild)" "Indexed"
 assert_not_contains "$(run today)" 'ses_v2_child'
 assert_contains "$(run stats)" 'Total sessions:      1'
 assert_contains "$(run search "it's valid" --json)" "$SESSION_ID"
@@ -520,6 +542,7 @@ sqlite3 "$DB" <<SQL
 INSERT INTO session_v2 SELECT * FROM session_v2 WHERE id='$SESSION_ID';
 UPDATE session_v2 SET id='ses_v2_empty',title=NULL,time_created=time_created+1,time_updated=time_updated+1 WHERE rowid=last_insert_rowid();
 UPDATE session_message SET data=json_set(data,'$.content[1].text','edited-visible') WHERE id='msg_v2_assistant';
+UPDATE session_v2 SET time_updated=time_updated+2 WHERE id='$SESSION_ID';
 SQL
 empty_list="$(run list 1 --json)"
 assert_contains "$empty_list" 'ses_v2_empty'
@@ -532,6 +555,13 @@ assert_contains "$(run log "$SESSION_ID")" "edited-visible"
 assert_not_contains "$(run log "$SESSION_ID")" "first-visible"
 assert_contains "$(run search edited-visible --json)" "$SESSION_ID"
 assert_not_contains "$(run search first-visible --json)" "$SESSION_ID"
+indexed_edit="$(run search edited-visible --json)"
+no_index_edit="$(run search edited-visible --json --no-index)"
+[[ "$indexed_edit" == "$no_index_edit" ]] || { printf 'Incremental index sync changed search output\n' >&2; exit 1; }
+assert_contains "$(run search 'V2 authoritative' --title --json)" "$SESSION_ID"
+assert_not_contains "$(run search edited-visible --title --json)" "$SESSION_ID"
+short_query_json="$(run search ab --json)"
+json_assert "$short_query_json" 'assert(Array.isArray(data), "short query must fall back to LIKE search")'
 
 # A partially migrated DB exposes legacy-only IDs, never stale duplicate content.
 sqlite3 "$DB" <<SQL
@@ -550,6 +580,7 @@ assert_contains "$(run show "$SESSION_ID")" 'tokens: 42'
 assert_not_contains "$(run log "$SESSION_ID")" "marker-final"
 assert_contains "$(run log "$OLD_SESSION_ID")" "legacy deployment notes"
 assert_fails move "$OLD_SESSION_ID" /tmp/sesh-test-project --apply
+assert_fails index
 sqlite3 "$DB" "UPDATE session SET time_created=9999999999999 WHERE id='$OLD_SESSION_ID';"
 assert_contains "$(run list 1 --json)" "$OLD_SESSION_ID"
 native_list="$(run list 1 --json --native-v2)"
@@ -558,6 +589,7 @@ assert_not_contains "$native_list" "$OLD_SESSION_ID"
 assert_not_contains "$(run list 100 --json --native-v2)" "$OLD_SESSION_ID"
 DB="$legacy_db"
 assert_fails list --json --native-v2
+assert_fails index
 
 if OPENCODE_DB="$TMPDIR/missing.db" "$ROOT/sesh" list >"$TMPDIR/missing-db.out" 2>"$TMPDIR/missing-db.err"; then
   printf 'Expected missing database command to fail\n' >&2
