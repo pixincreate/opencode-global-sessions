@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-10
+
+### Changed
+
+- Refresh the pinned dependencies: @opentui/core and @opentui/solid to 0.5.17, plus @babel/core, @types/node, @opencode/plugin, and @opencode-ai/plugin.
+- Ignore solid-js updates in Dependabot while @opentui/solid pins it to exactly 1.9.12.
+
+### Fixed
+
+- Force seroval and seroval-plugins to 1.6.9 so the critical GHSA-p6vx-979v-rg4c advisory clears while the @opentui/solid peer pin stays in place.
+
 ## [2.1.0] - 2026-10-04
 
 ### Added

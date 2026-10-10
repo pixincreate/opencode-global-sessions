@@ -1,6 +1,6 @@
 {
   "name": "opencode-global-sessions",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Global session search for OpenCode",
   "exports": {
     "./tui": "./dist/tui.js"
