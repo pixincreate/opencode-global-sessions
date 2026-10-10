@@ -10,5 +10,9 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    ignore:
+      # @opentui/solid pins solid-js to exactly 1.9.12; remove this ignore
+      # when @opentui relaxes the peer range.
+      - dependency-name: "solid-js"
     labels:
       - "dependencies"
