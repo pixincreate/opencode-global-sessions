@@ -44,5 +44,9 @@
     "session",
     "search"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "overrides": {
+    "seroval": "1.6.9",
+    "seroval-plugins": "1.6.9"
+  }
 }
