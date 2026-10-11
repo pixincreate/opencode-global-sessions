@@ -26,7 +26,7 @@ After poking around OpenCode's local database and running SQL against `~/.local`
 
 ## Installation
 
-### From npm
+### The plugin (OpenCode)
 
 Use this package on OpenCode v1 and v2.
 
@@ -36,6 +36,12 @@ On v2, add the package to `plugins` in `~/.config/opencode/cli.json`:
 {
   "plugins": ["opencode-global-sessions"]
 }
+```
+
+Or use the OpenCode CLI:
+
+```bash
+opencode plugin add opencode-global-sessions
 ```
 
 On v1, add it to `plugin` in `~/.config/opencode/tui.jsonc`:
@@ -58,31 +64,31 @@ To change the picker size, pass options:
 
 Restart OpenCode and run `/sessions-global`.
 OpenCode installs the package from npm on first start and caches it.
-The package bundles the `sesh` CLI, so the picker works without any other setup.
+The package bundles its own `sesh` copy, so the picker works with no other setup.
 
-A bare package name resolves to the latest version once and stays on it.
-To update, pin the package version you want and restart OpenCode.
+A bare package name resolves to the latest version once and is held.
+OpenCode does not re-check npm on every start.
+To update, run:
 
-The npm install does not put `sesh` on your `PATH`.
-To use the CLI directly, run the installer below.
+```bash
+opencode plugin update
+```
 
-### One-line install
+Or pin a version in `cli.json`, for example `opencode-global-sessions@3.0.0`.
 
-The installer installs both parts:
+### The sesh CLI (optional)
 
-- the `sesh` CLI at `~/.local/bin/sesh`
-- the plugin entry in `tui.jsonc` on v1 or `cli.json` on v2
-
-Use line comments (`//`) in installer-managed configuration.
-The installer rejects block comments (`/* ... */`) without changing your configuration.
-
-By default it uses the latest GitHub release for the CLI and the matching npm package for the plugin entry.
-It detects `opencode --version`.
-Pass `--opencode-version 1` or `--opencode-version 2` to select the host explicitly.
+The plugin does not put `sesh` on your `PATH`.
+Install the CLI to run `sesh` in a shell.
+The installer asks before it adds the CLI, then keeps a managed copy and links it:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash
 ```
+
+- Answer the prompt to link `sesh` to `~/.local/bin/sesh`. The default is yes.
+- The managed copy lives at `~/.local/share/opencode-global-sessions/sesh`.
+- Pass `--cli` to install without a prompt, or `--no-cli` to skip the CLI.
 
 Check it:
 
@@ -90,29 +96,13 @@ Check it:
 sesh list
 ```
 
-Restart OpenCode and run:
-
-```text
-/sessions-global
-```
-
-To install a specific release:
+To install the CLI from a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --version 1.0.0
+curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --version 3.0.0
 ```
 
-### Development install
-
-Use clone mode when working on the plugin locally.
-It clones the repo, builds the plugin, and symlinks the CLI to `~/.local/bin/sesh`.
-V1 loads `dist/tui.js`; v2 loads the `dist` directory.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --clone
-```
-
-If you keep the CLI somewhere else, tell the plugin where it is:
+If the CLI lives somewhere else, tell the plugin where it is:
 
 ```bash
 export SESH_BIN="/absolute/path/to/sesh"
@@ -120,19 +110,16 @@ export SESH_BIN="/absolute/path/to/sesh"
 
 ## Uninstallation
 
-Run the installer in uninstall mode:
+Remove the plugin with `opencode plugin remove opencode-global-sessions`, or delete its entry from `cli.json` or `tui.jsonc`.
+
+Remove the CLI with the installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pixincreate/opencode-global-sessions/master/scripts/install.sh | bash -s -- --uninstall
 ```
 
-This removes `~/.local/bin/sesh` and the managed entry from the selected host's configuration.
-Use the same `--opencode-version` value you used to install.
-If you set this env var manually, remove it from your shell config too:
-
-```bash
-SESH_BIN
-```
+That removes the `~/.local/bin/sesh` symlink and the managed copy.
+If you set `SESH_BIN` in your shell config, remove it too.
 
 ## Usage
 
@@ -281,7 +268,7 @@ Create a release:
 npm run release -- 1.0.1
 ```
 
-That updates the package version, runs checks, commits the version bump, creates `v1.0.1`, and pushes the branch and tag. The release workflow attaches the package tarball to the GitHub release.
+That updates the package version, runs checks, commits the version bump, creates `v1.0.1`, and pushes the branch and tag. The release workflow publishes the package to npm and attaches the tarball to the GitHub release.
 
 ## Contribution
 

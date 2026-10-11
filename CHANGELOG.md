@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-11
+
+### Changed
+
+- `scripts/install.sh` installs the `sesh` CLI only. Install the OpenCode plugin with `opencode plugin add opencode-global-sessions`; the installer no longer writes plugin configuration.
+- The installer asks before it adds `sesh` to `PATH`, and it honors `--cli` and `--no-cli`.
+- The CLI is copied to a managed path (`~/.local/share/opencode-global-sessions/sesh`) and symlinked to `~/.local/bin/sesh`.
+
+### Removed
+
+- The `--clone` and `--opencode-version` installer options.
+- The `SESH_INSTALL_CONFIG`, `SESH_INSTALL_PLUGIN_SPEC`, `SESH_INSTALL_REPO_DIR`, and `SESH_INSTALL_REPO_URL` variables.
+
 ## [2.1.1] - 2026-10-10
 
 ### Changed

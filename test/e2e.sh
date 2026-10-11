@@ -623,126 +623,54 @@ missing_db_err="$(<"$TMPDIR/missing-db.err")"
 assert_contains "$missing_db_err" "Database not found"
 
 installer_home="$TMPDIR/installer-home"
-mkdir -p "$TMPDIR/detection-bin"
-printf '#!/bin/sh\nprintf "opencode unknown\\n"\n' >"$TMPDIR/detection-bin/opencode"
-chmod +x "$TMPDIR/detection-bin/opencode"
-if PATH="$TMPDIR/detection-bin:$PATH" SESH_INSTALL_BIN_DIR="$installer_home/bin" SESH_INSTALL_CONFIG="$installer_home/cli.json" SESH_INSTALL_STATE_DIR="$installer_home/state" "$ROOT/scripts/install.sh" >"$TMPDIR/detection.out" 2>"$TMPDIR/detection.err"; then
-  printf 'Expected ambiguous OpenCode version detection to fail\n' >&2
+installer_bin="$installer_home/.local/bin"
+installer_state="$installer_home/.local/share/opencode-global-sessions"
+
+run_installer() {
+  SESH_INSTALL_BIN_DIR="$installer_bin" \
+    SESH_INSTALL_STATE_DIR="$installer_state" \
+    SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+    "$ROOT/scripts/install.sh" "$@"
+}
+
+# --cli installs the managed copy and links it onto PATH.
+run_installer --cli --version 1.0.0 >"$TMPDIR/install.out"
+[[ -L "$installer_bin/sesh" ]] || { printf 'Expected installer to create a sesh symlink\n' >&2; exit 1; }
+[[ "$(readlink "$installer_bin/sesh")" == "$installer_state/sesh" ]] || { printf 'Expected symlink to point at the managed copy\n' >&2; exit 1; }
+[[ -x "$installer_state/sesh" ]] || { printf 'Expected managed sesh copy to be executable\n' >&2; exit 1; }
+assert_contains "$(<"$TMPDIR/install.out")" "Installed sesh to"
+
+# Reinstalling keeps the managed symlink.
+run_installer --cli --version 1.0.0 >/dev/null
+[[ "$(readlink "$installer_bin/sesh")" == "$installer_state/sesh" ]] || { printf 'Expected reinstall to keep the managed symlink\n' >&2; exit 1; }
+
+# --uninstall removes the symlink and the managed copy.
+run_installer --uninstall >"$TMPDIR/uninstall.out"
+[[ ! -e "$installer_bin/sesh" ]] || { printf 'Expected uninstall to remove the symlink\n' >&2; exit 1; }
+[[ ! -e "$installer_state/sesh" ]] || { printf 'Expected uninstall to remove the managed copy\n' >&2; exit 1; }
+
+# --no-cli installs nothing.
+run_installer --no-cli --version 1.0.0 >"$TMPDIR/no-cli.out"
+[[ ! -e "$installer_bin/sesh" ]] || { printf 'Expected --no-cli to skip the symlink\n' >&2; exit 1; }
+[[ ! -e "$installer_state/sesh" ]] || { printf 'Expected --no-cli to skip the managed copy\n' >&2; exit 1; }
+assert_contains "$(<"$TMPDIR/no-cli.out")" "Skipped"
+
+# Unknown options fail without prompting.
+if run_installer --wat >"$TMPDIR/wat.out" 2>"$TMPDIR/wat.err"; then
+  printf 'Expected unknown installer option to fail\n' >&2
   exit 1
 fi
-assert_contains "$(<"$TMPDIR/detection.err")" "cannot detect OpenCode version"
-[[ ! -e "$installer_home" ]] || { printf 'Failed detection must not create installation files\n' >&2; exit 1; }
-installer_bin="$installer_home/.local/bin"
-installer_config="$installer_home/.config/opencode/cli.json"
-SESH_INSTALL_BIN_DIR="$installer_bin" \
-  SESH_INSTALL_CONFIG="$installer_config" \
-  SESH_INSTALL_STATE_DIR="$installer_home/.local/share/opencode-global-sessions" \
-  SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
-  SESH_INSTALL_PLUGIN_SPEC="https://example.test/opencode-global-sessions-1.0.0.tgz" \
-  "$ROOT/scripts/install.sh" --opencode-version 2 --version 1.0.0 >"$TMPDIR/install.out"
-[[ -x "$installer_bin/sesh" ]] || { printf 'Expected installer to create executable sesh\n' >&2; exit 1; }
-installer_config_content="$(<"$installer_config")"
-assert_contains "$installer_config_content" "opencode-global-sessions:start"
-assert_contains "$installer_config_content" "https://example.test/opencode-global-sessions-1.0.0.tgz"
+assert_contains "$(<"$TMPDIR/wat.err")" "unknown option"
 
-SESH_INSTALL_BIN_DIR="$installer_bin" \
-  SESH_INSTALL_CONFIG="$installer_config" \
-  SESH_INSTALL_STATE_DIR="$installer_home/.local/share/opencode-global-sessions" \
-  "$ROOT/scripts/install.sh" --opencode-version 2 --uninstall >"$TMPDIR/uninstall.out"
-[[ ! -e "$installer_bin/sesh" ]] || { printf 'Expected uninstall to remove sesh\n' >&2; exit 1; }
-installer_config_after_uninstall="$(<"$installer_config")"
-assert_not_contains "$installer_config_after_uninstall" "opencode-global-sessions:start"
-
-for major in 1 2; do
-  key="plugin"
-  [[ "$major" == 2 ]] && key="plugins"
-  printf '{\n // "%s": ["example-plugin"],\n "%s": ["other-plugin"], "theme": "test"\n}\n' "$key" "$key" >"$installer_config"
-  for _iteration in 1 2; do
-    SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
-      SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
-      SESH_INSTALL_PLUGIN_SPEC="opencode-global-sessions@2.0.0" \
-      "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >/dev/null
-  done
-  CONFIG="$installer_config" MAJOR="$major" node --input-type=module <<'JS'
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
-const entry = process.env.MAJOR === "1" ? ["opencode-global-sessions@2.0.0", { limit: 50 }] : { package: "opencode-global-sessions@2.0.0", options: { limit: 50 } };
-assert.deepEqual(config, { [process.env.MAJOR === "1" ? "plugin" : "plugins"]: [entry, "other-plugin"], theme: "test" });
-JS
-  SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
-    SESH_INSTALL_STATE_DIR="$installer_home/state" "$ROOT/scripts/install.sh" --opencode-version "$major" --uninstall >/dev/null
-  CONFIG="$installer_config" KEY="$key" node --input-type=module <<'JS'
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
-assert.deepEqual(config, { [process.env.KEY]: ["other-plugin"], theme: "test" });
-JS
-  printf '{\n  // "%s": ["example-plugin"],\n  "theme": "test"\n}\n' "$key" >"$installer_config"
-  for _iteration in 1 2; do
-    SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
-      SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
-      SESH_INSTALL_PLUGIN_SPEC="opencode-global-sessions@2.0.0" \
-      "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >/dev/null
-  done
-  CONFIG="$installer_config" KEY="$key" node --input-type=module <<'JS'
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-const config = JSON.parse(readFileSync(process.env.CONFIG, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[\]}])/g, "$1"));
-assert.equal(config[process.env.KEY].length, 1);
-assert.equal(config.theme, "test");
-JS
-  SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
-    SESH_INSTALL_STATE_DIR="$installer_home/state" "$ROOT/scripts/install.sh" --opencode-version "$major" --uninstall >/dev/null
-  printf '{\n /* example\n "%s": []\n */\n "theme": "test"\n}\n' "$key" >"$installer_config"
-  cp "$installer_config" "$TMPDIR/comment-config-original"
-  if SESH_INSTALL_BIN_DIR="$installer_bin" SESH_INSTALL_CONFIG="$installer_config" \
-    SESH_INSTALL_STATE_DIR="$installer_home/state" SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
-    "$ROOT/scripts/install.sh" --opencode-version "$major" --version 2.0.0 >"$TMPDIR/block-comment.out" 2>"$TMPDIR/block-comment.err"; then
-    printf 'Expected block-comment config to fail safely\n' >&2; exit 1
-  fi
-  assert_contains "$(<"$TMPDIR/block-comment.err")" 'Remove block comments'
-  cmp "$installer_config" "$TMPDIR/comment-config-original"
-done
-
-fake_repo="$TMPDIR/fake-repo"
-mkdir -p "$fake_repo/dist"
-cp "$ROOT/sesh" "$fake_repo/sesh"
-chmod +x "$fake_repo/sesh"
-cat >"$fake_repo/package.json" <<'JSON'
-{
-  "scripts": {
-    "build": "mkdir -p dist && cp tui-source.js dist/tui.js"
-  }
-}
-JSON
-printf 'export default { id: "fake" }\n' >"$fake_repo/tui-source.js"
-git -C "$fake_repo" init -q
-git -C "$fake_repo" add .
-git -C "$fake_repo" -c user.email=test@example.com -c user.name=test commit -qm init
-
-clone_home="$TMPDIR/clone-home"
-clone_state="$clone_home/.local/share/opencode-global-sessions"
-clone_repo="$clone_state/repo"
-clone_bin="$clone_home/.local/bin"
-clone_config="$clone_home/.config/opencode/cli.json"
-SESH_INSTALL_BIN_DIR="$clone_bin" \
-  SESH_INSTALL_CONFIG="$clone_config" \
-  SESH_INSTALL_STATE_DIR="$clone_state" \
-  SESH_INSTALL_REPO_DIR="$clone_repo" \
-  SESH_INSTALL_REPO_URL="$fake_repo" \
-  "$ROOT/scripts/install.sh" --opencode-version 2 --clone >"$TMPDIR/clone-install.out"
-[[ -L "$clone_bin/sesh" ]] || { printf 'Expected clone install to symlink sesh\n' >&2; exit 1; }
-clone_config_content="$(<"$clone_config")"
-assert_contains "$clone_config_content" "$clone_repo/dist"
-
-SESH_INSTALL_BIN_DIR="$clone_bin" \
-  SESH_INSTALL_CONFIG="$clone_config" \
-  SESH_INSTALL_STATE_DIR="$clone_state" \
-  SESH_INSTALL_REPO_DIR="$clone_repo" \
-  "$ROOT/scripts/install.sh" --opencode-version 2 --uninstall >"$TMPDIR/clone-uninstall.out"
-[[ ! -e "$clone_bin/sesh" ]] || { printf 'Expected clone uninstall to remove sesh symlink\n' >&2; exit 1; }
-[[ ! -e "$clone_repo" ]] || { printf 'Expected clone uninstall to remove managed repo\n' >&2; exit 1; }
+# Without a controlling terminal the installer installs by default.
+if command -v setsid >/dev/null 2>&1; then
+  rm -f "$installer_bin/sesh" "$installer_state/sesh"
+  SESH_INSTALL_BIN_DIR="$installer_bin" \
+    SESH_INSTALL_STATE_DIR="$installer_state" \
+    SESH_INSTALL_CLI_SOURCE="$ROOT/sesh" \
+    setsid "$ROOT/scripts/install.sh" --version 1.0.0 >"$TMPDIR/default.out"
+  [[ -L "$installer_bin/sesh" ]] || { printf 'Expected the default to install the symlink\n' >&2; exit 1; }
+fi
 
 printf '#!/bin/sh\nprintf "[]\\n"\n' >"$TMPDIR/empty-sesh"
 printf '#!/bin/sh\nprintf "not-json\\n"\n' >"$TMPDIR/invalid-sesh"
