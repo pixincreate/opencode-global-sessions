@@ -24,7 +24,7 @@
     "@opencode-ai/plugin": "^1.18.34",
     "@opencode/plugin": "^2.0.11",
     "@opentui/core": "^0.5.17",
-    "@opentui/solid": "^0.5.17",
+    "@opentui/solid": "^0.6.6",
     "@types/node": "^26.6.2",
     "esbuild": "^0.28.2",
     "solid-js": "1.9.12",
