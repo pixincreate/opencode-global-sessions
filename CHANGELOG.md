@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-23
+
+### Changed
+
+- Dependency refresh: @opentui/core and @opentui/solid to 0.6.7; @opencode-ai/plugin to 1.19.4; @opencode/plugin to 2.1.3.
+
+### Fixed
+
+- Force effect to 4.0.1 with an npm override so the toml advisories from the @opencode-ai/plugin dependency chain clear; `npm audit` reports no vulnerabilities.
+
 ## [3.0.0] - 2026-10-11
 
 ### Changed
