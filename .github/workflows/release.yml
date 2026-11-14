@@ -45,7 +45,7 @@ jobs:
           npm pack --pack-destination release
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3.0.1
+        uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: opencode-global-sessions ${{ github.event.inputs.tag || github.ref_name }}
