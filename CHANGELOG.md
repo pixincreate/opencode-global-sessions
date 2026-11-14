@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-11-14
+
+### Changed
+
+- Dependency refresh: @opentui/core and @opentui/solid to 0.9.0; @opencode/plugin to 2.3.0; @opencode-ai/plugin to 1.19.5; @types/node to 26.6.6.
+
+### Fixed
+
+- Force effect to 4.1.0, seroval to 1.8.1, seroval-plugins to 1.8.0, and zod to 4.6.7 with npm overrides so the known advisories clear; `npm audit` reports no high or critical vulnerabilities.
+
 ## [3.0.1] - 2026-10-23
 
 ### Changed
