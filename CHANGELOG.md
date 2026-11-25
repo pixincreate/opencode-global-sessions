@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-11-25
+
+### Changed
+
+- Dependency refresh: @opentui/core and @opentui/solid to 0.9.9; @opencode-ai/plugin to 1.19.6; @opencode/plugin to 2.4.1; @types/node to 26.6.10.
+
 ## [3.0.2] - 2026-11-14
 
 ### Changed
