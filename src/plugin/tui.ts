@@ -149,8 +149,11 @@ export const openRecentSessions = async (
 
 const v2Picker = (context: Context): PickerHost => ({
   pick(options) {
+    // select() mounts the dialog through replace(), which resets the size to
+    // "medium"; widen it only after the dialog is shown.
+    const picked = context.ui.dialog.select<SessionRow>({ title: "Recent global sessions", placeholder: "Search sessions", options });
     context.ui.dialog.set({ size: "xlarge" });
-    return context.ui.dialog.select<SessionRow>({ title: "Recent global sessions", placeholder: "Search sessions", options });
+    return picked;
   },
   navigate: (sessionID) => context.ui.router.navigate({ type: "session", sessionID }),
   toast: (input) => context.ui.toast.show(input),
@@ -158,11 +161,12 @@ const v2Picker = (context: Context): PickerHost => ({
 
 const v1Picker = (api: TuiPluginApi): PickerHost => ({
   pick: (options) => new Promise((resolve) => {
-    api.ui.dialog.setSize("xlarge");
     api.ui.dialog.replace(() => api.ui.DialogSelect<SessionRow>({
       title: "Recent global sessions", placeholder: "Search sessions", options,
       onSelect(option) { resolve(option.value); api.ui.dialog.clear(); },
     }), () => resolve(undefined));
+    // replace() resets the size to "medium"; widen after mounting.
+    api.ui.dialog.setSize("xlarge");
   }),
   navigate: (sessionID) => api.route.navigate("session", { sessionID }),
   toast: (input) => api.ui.toast(input),
